@@ -1,0 +1,1173 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodeMaster Pro</title>
+
+<!-- ★ CSS de loading e v-cloak — deve vir ANTES do Vue ★ -->
+<style>
+/* v-cloak oculta todo template até Vue montar */
+[v-cloak] { display: none !important; }
+
+/* Loading screen */
+#loading-screen {
+  position: fixed; inset: 0; z-index: 9999;
+  background: #080c14;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 20px;
+}
+.loader-ring {
+  width: 60px; height: 60px;
+  border: 3px solid #1e293b;
+  border-top-color: #00d4ff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loader-text {
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  color: #475569; font-size: 13px; letter-spacing: 0.1em;
+}
+.loader-logo {
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  color: #00d4ff; font-size: 28px; font-weight: 900;
+  letter-spacing: -0.02em;
+}
+
+/* Estilos base (sem Tailwind — fallback seguro) */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: #080c14; color: #e2e8f0; overflow: hidden; }
+body { font-family: 'Syne', 'Segoe UI', sans-serif; }
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: #0d1117; }
+::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 2px; }
+
+/* Grid background */
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(0,212,255,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,255,0.025) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* Scanlines effect */
+body::after {
+  content: '';
+  position: fixed; inset: 0; pointer-events: none; z-index: 9998;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.025) 2px, rgba(0,0,0,0.025) 4px);
+}
+
+/* code editor */
+.code-editor {
+  font-family: 'JetBrains Mono', 'Courier New', monospace !important;
+  font-size: 13px; line-height: 1.7; tab-size: 4;
+  background: #0d1117; color: #abb2bf;
+  border: 1px solid #1e293b; border-radius: 8px;
+  padding: 16px; resize: none; outline: none; width: 100%;
+  transition: border-color 0.2s;
+}
+.code-editor:focus { border-color: rgba(0,212,255,0.4); }
+
+/* nav active */
+.nav-active {
+  background: linear-gradient(90deg, rgba(0,212,255,0.12), transparent);
+  border-left: 2px solid #00d4ff !important;
+  color: #00d4ff !important;
+}
+
+/* tab active */
+.tab-active { border-bottom: 2px solid #00d4ff; color: #00d4ff; }
+
+/* xp bar */
+.xp-bar { background: linear-gradient(90deg,#00d4ff,#00ff88); box-shadow: 0 0 10px rgba(0,212,255,0.35); }
+.progress-fill { transition: width 0.7s cubic-bezier(0.4,0,0.2,1); }
+
+/* badges */
+.badge-py   { background: rgba(59,130,246,0.14); color: #60a5fa; border: 1px solid rgba(59,130,246,0.3); border-radius:6px; padding:2px 8px; font-size:11px; }
+.badge-js   { background: rgba(251,191,36,0.14);  color: #fbbf24; border: 1px solid rgba(251,191,36,0.3);  border-radius:6px; padding:2px 8px; font-size:11px; }
+.badge-java { background: rgba(239,68,68,0.14);   color: #f87171; border: 1px solid rgba(239,68,68,0.3);   border-radius:6px; padding:2px 8px; font-size:11px; }
+
+/* quiz */
+.quiz-opt { transition: all 0.15s; cursor: pointer; }
+.quiz-opt:hover:not(.answered) { background: rgba(0,212,255,0.07); border-color: rgba(0,212,255,0.4) !important; }
+.quiz-correct { background: rgba(0,255,136,0.09) !important; border-color: rgba(0,255,136,0.5) !important; }
+.quiz-wrong   { background: rgba(255,55,95,0.09)  !important; border-color: rgba(255,55,95,0.5)  !important; }
+.quiz-dim     { opacity: 0.4; }
+
+/* chat */
+.chat-user { background: rgba(0,212,255,0.08); border: 1px solid rgba(0,212,255,0.18); border-radius: 14px 14px 4px 14px; }
+.chat-ai   { background: rgba(191,90,242,0.07); border: 1px solid rgba(191,90,242,0.18); border-radius: 14px 14px 14px 4px; }
+
+/* neon glows */
+.glow-cyan   { text-shadow: 0 0 18px rgba(0,212,255,0.55); }
+.glow-green  { text-shadow: 0 0 18px rgba(0,255,136,0.55); }
+
+/* animations */
+@keyframes fadeIn  { from { opacity:0 } to { opacity:1 } }
+@keyframes slideUp { from { opacity:0; transform:translateY(18px) } to { opacity:1; transform:translateY(0) } }
+@keyframes pulseG  { 0%,100% { opacity:1 } 50% { opacity:0.4 } }
+.anim-fade { animation: fadeIn  0.35s ease-out; }
+.anim-up   { animation: slideUp 0.35s ease-out; }
+.pulse-glow { animation: pulseG 2s ease-in-out infinite; }
+
+/* Level badge pulse */
+@keyframes lvlUp { 0%,100%{transform:scale(1)} 50%{transform:scale(1.25)} }
+.lvl-pulse { animation: lvlUp 0.5s ease-out; }
+
+/* Highlight.js override */
+pre code.hljs { background: #0d1117 !important; border-radius: 8px; padding: 18px !important; font-size: 12.5px !important; line-height: 1.7 !important; }
+</style>
+
+<!-- Google Fonts (carrega assíncrono, sem bloquear) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+</head>
+<body class="grid-bg">
+
+<!-- ════════════════════════════════════════════ -->
+<!-- LOADING SCREEN (some quando Vue monta)       -->
+<!-- ════════════════════════════════════════════ -->
+<div id="loading-screen">
+  <div class="loader-logo">◈ CodeMaster Pro</div>
+  <div class="loader-ring"></div>
+  <div class="loader-text" id="load-msg">carregando scripts...</div>
+</div>
+
+<!-- ════════════════════════════════════════════ -->
+<!-- APP PRINCIPAL — oculto até Vue montar        -->
+<!-- ════════════════════════════════════════════ -->
+<div id="app" v-cloak style="display:flex;height:100vh;overflow:hidden;">
+
+  <!-- ─── SIDEBAR ─────────────────────────────── -->
+  <aside style="width:220px;background:#0d1117;border-right:1px solid #1e293b;display:flex;flex-direction:column;flex-shrink:0;position:relative;overflow:hidden;">
+    <!-- Top accent line -->
+    <div style="height:1px;background:linear-gradient(90deg,transparent,#00d4ff60,transparent);"></div>
+
+    <!-- Logo -->
+    <div style="padding:18px 20px 14px;border-bottom:1px solid #1e293b;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-size:24px;color:#00d4ff;" class="glow-cyan">◈</span>
+        <span style="font-family:'Syne',sans-serif;font-weight:900;color:#fff;font-size:17px;letter-spacing:-0.02em;">CodeMaster</span>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#334155;margin-top:3px;padding-left:34px;">Pro v2.0</div>
+    </div>
+
+    <!-- XP + Level -->
+    <div style="padding:12px 16px;border-bottom:1px solid #1e293b;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;letter-spacing:0.08em;">NÍVEL {{ progress.level }}</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#ffd60a;font-weight:700;">⚡ {{ progress.xp }} XP</span>
+      </div>
+      <div style="height:5px;background:#1e293b;border-radius:3px;overflow:hidden;">
+        <div class="xp-bar progress-fill" style="height:100%;border-radius:3px;" :style="'width:'+xpPercent+'%'"></div>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#334155;margin-top:5px;">{{ xpToNext }} XP para nível {{ progress.level+1 }}</div>
+    </div>
+
+    <!-- Nav items -->
+    <nav style="flex:1;overflow-y:auto;padding:10px 0;">
+      <div style="padding:0 10px;">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#334155;letter-spacing:0.12em;padding:4px 10px 8px;text-transform:uppercase;">Menu</div>
+
+        <button v-for="item in navItems" :key="item.id"
+          @click="navigate(item.id)"
+          :class="currentView===item.id ? 'nav-active' : ''"
+          style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;border:none;border-left:2px solid transparent;background:transparent;cursor:pointer;text-align:left;transition:all 0.15s;margin-bottom:2px;font-family:'Syne',sans-serif;font-size:13px;font-weight:500;color:#64748b;">
+          <span style="font-size:17px;line-height:1;">{{ item.icon }}</span>
+          <span>{{ item.label }}</span>
+        </button>
+
+        <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#334155;letter-spacing:0.12em;padding:12px 10px 8px;text-transform:uppercase;">Linguagens</div>
+
+        <button v-for="lang in languages" :key="lang.id"
+          @click="navigate('lessons', lang.id)"
+          :class="currentView==='lessons' && currentLang===lang.id ? 'nav-active' : ''"
+          style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:8px;border:none;border-left:2px solid transparent;background:transparent;cursor:pointer;text-align:left;transition:all 0.15s;margin-bottom:2px;">
+          <span style="font-size:17px;line-height:1;">{{ lang.emoji }}</span>
+          <div style="flex:1;">
+            <div style="font-family:'Syne',sans-serif;font-size:13px;font-weight:600;color:#94a3b8;">{{ lang.name }}</div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#334155;">
+              {{ langDone(lang.id) }}/{{ lang.lessons }} lições
+            </div>
+          </div>
+        </button>
+      </div>
+    </nav>
+
+    <!-- AI status -->
+    <div style="padding:10px 16px;border-top:1px solid #1e293b;display:flex;align-items:center;gap:8px;">
+      <div class="pulse-glow" style="width:7px;height:7px;border-radius:50%;" :style="'background:'+(aiOnline?'#00ff88':'#ff6b35')"></div>
+      <span style="font-family:'JetBrains Mono',monospace;font-size:10px;" :style="'color:'+(aiOnline?'#00ff8880':'#ff6b3580')">
+        {{ aiOnline ? 'IA Online' : 'IA Offline' }}
+      </span>
+    </div>
+  </aside>
+
+  <!-- ─── MAIN ──────────────────────────────────── -->
+  <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+
+    <!-- Top bar -->
+    <header style="height:48px;background:#0d1117;border-bottom:1px solid #1e293b;display:flex;align-items:center;padding:0 24px;flex-shrink:0;gap:10px;">
+      <span style="font-family:'Syne',sans-serif;font-weight:700;color:#fff;font-size:15px;">{{ pageTitle }}</span>
+      <span v-if="pageCrumb" style="color:#334155;font-size:15px;">/</span>
+      <span v-if="pageCrumb" style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#00d4ff;">{{ pageCrumb }}</span>
+      <div style="margin-left:auto;display:flex;gap:16px;align-items:center;">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#475569;">
+          Lições: <strong style="color:#00ff88;">{{ progress.lessons ? progress.lessons.length : 0 }}</strong>
+          &nbsp;|&nbsp;
+          Exercícios: <strong style="color:#ffd60a;">{{ progress.exercises ? progress.exercises.length : 0 }}</strong>
+        </span>
+      </div>
+    </header>
+
+    <!-- VIEWS -->
+    <div style="flex:1;overflow:hidden;">
+
+      <!-- HOME -->
+      <div v-if="currentView==='home'" style="height:100%;overflow-y:auto;padding:36px;" class="anim-fade">
+        <div style="max-width:900px;margin:0 auto;">
+
+          <!-- Hero -->
+          <div style="margin-bottom:40px;">
+            <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#00d4ff;margin-bottom:10px;letter-spacing:0.05em;">// bem-vindo de volta</div>
+            <h1 style="font-family:'Syne',sans-serif;font-weight:900;font-size:48px;color:#fff;line-height:1.05;margin-bottom:14px;">
+              Aprenda a<br>
+              <span style="background:linear-gradient(90deg,#00d4ff,#00ff88);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">Programar</span>
+            </h1>
+            <p style="font-family:'Syne',sans-serif;color:#64748b;font-size:16px;max-width:500px;">Python, JavaScript e Java. Com IA integrada, exercícios práticos e quiz interativo.</p>
+          </div>
+
+          <!-- Stats -->
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:36px;">
+            <div v-for="(s,i) in homeStats" :key="s.label"
+              :style="'animation-delay:'+(i*0.08)+'s'"
+              class="anim-up"
+              style="background:#111827;border:1px solid #1e293b;border-radius:16px;padding:18px;">
+              <div style="font-family:'Syne',sans-serif;font-weight:900;font-size:34px;" :style="'color:'+s.color">{{ s.value }}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;margin-top:4px;text-transform:uppercase;letter-spacing:0.08em;">{{ s.label }}</div>
+            </div>
+          </div>
+
+          <!-- Language cards -->
+          <div style="margin-bottom:10px;">
+            <h2 style="font-family:'Syne',sans-serif;font-weight:700;font-size:18px;color:#fff;margin-bottom:16px;">🎯 Escolha sua trilha</h2>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;">
+              <div v-for="lang in languages" :key="lang.id"
+                @click="navigate('lessons',lang.id)"
+                style="background:#111827;border:1px solid #1e293b;border-radius:20px;padding:24px;cursor:pointer;transition:all 0.25s;">
+                <div style="font-size:44px;margin-bottom:14px;">{{ lang.emoji }}</div>
+                <div style="font-family:'Syne',sans-serif;font-weight:900;font-size:20px;margin-bottom:6px;" :style="'color:'+lang.color">{{ lang.name }}</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#475569;margin-bottom:14px;">{{ lang.desc }}</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#334155;margin-bottom:10px;">{{ lang.lessons }} lições disponíveis</div>
+                <!-- mini progress -->
+                <div style="height:3px;background:#1e293b;border-radius:2px;overflow:hidden;">
+                  <div class="progress-fill" style="height:100%;border-radius:2px;" :style="'width:'+langPct(lang.id)+'%;background:'+lang.color"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Quick access -->
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:24px;">
+            <button @click="navigate('exercises')" style="background:#111827;border:1px solid #1e293b;border-radius:14px;padding:20px;text-align:left;cursor:pointer;transition:border-color 0.2s;">
+              <div style="font-size:28px;margin-bottom:8px;">💻</div>
+              <div style="font-family:'Syne',sans-serif;font-weight:700;color:#fff;font-size:15px;">Exercícios</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;">{{ progress.exercises ? progress.exercises.length : 0 }} concluídos</div>
+            </button>
+            <button @click="navigate('quiz')" style="background:#111827;border:1px solid #1e293b;border-radius:14px;padding:20px;text-align:left;cursor:pointer;transition:border-color 0.2s;">
+              <div style="font-size:28px;margin-bottom:8px;">🧠</div>
+              <div style="font-family:'Syne',sans-serif;font-weight:700;color:#fff;font-size:15px;">Quiz</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;">{{ progress.quizzes_taken || 0 }} realizados</div>
+            </button>
+            <button @click="navigate('ai')" style="background:#111827;border:1px solid #1e293b;border-radius:14px;padding:20px;text-align:left;cursor:pointer;transition:border-color 0.2s;">
+              <div style="font-size:28px;margin-bottom:8px;">🤖</div>
+              <div style="font-family:'Syne',sans-serif;font-weight:700;color:#fff;font-size:15px;">IA Tutor</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;">Pergunte qualquer coisa</div>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- LIÇÕES -->
+      <div v-else-if="currentView==='lessons'" style="height:100%;display:flex;overflow:hidden;" class="anim-fade">
+
+        <!-- Lista de lições -->
+        <div style="width:250px;background:#0d1117;border-right:1px solid #1e293b;display:flex;flex-direction:column;flex-shrink:0;">
+          <!-- Lang tabs -->
+          <div style="display:flex;border-bottom:1px solid #1e293b;">
+            <button v-for="l in languages" :key="l.id"
+              @click="navigate('lessons',l.id)"
+              :style="'flex:1;padding:10px 4px;border:none;background:transparent;cursor:pointer;font-family:Syne,sans-serif;font-size:11px;font-weight:700;transition:all 0.15s;border-bottom:2px solid transparent;'+(l.id===currentLang?'border-bottom-color:#00d4ff;color:#00d4ff':'color:#475569')">
+              {{ l.emoji }}<br>{{ l.name }}
+            </button>
+          </div>
+          <!-- Lesson list -->
+          <div style="flex:1;overflow-y:auto;padding:8px 0;">
+            <div v-for="(lesson,i) in lessons" :key="lesson.id"
+              @click="selectLesson(lesson)"
+              :style="'display:flex;align-items:flex-start;gap:10px;padding:11px 14px;cursor:pointer;transition:all 0.12s;border-left:2px solid transparent;'+(selectedLesson && selectedLesson.id===lesson.id ? 'background:#141b2d;border-left-color:#00d4ff' : 'hover:background:#0f1629')">
+              <!-- number/check -->
+              <div style="width:22px;height:22px;border-radius:50%;border:1px solid;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;"
+                :style="isDone(lesson.id) ? 'border-color:#00ff8860;background:rgba(0,255,136,0.1);color:#00ff88' : 'border-color:#1e293b;color:#475569'">
+                {{ isDone(lesson.id) ? '✓' : i+1 }}
+              </div>
+              <div style="flex:1;min-width:0;">
+                <div style="font-family:'Syne',sans-serif;font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+                  :style="selectedLesson && selectedLesson.id===lesson.id ? 'color:#fff' : 'color:#64748b'">
+                  {{ lesson.emoji }} {{ lesson.title }}
+                </div>
+                <div style="display:flex;gap:6px;margin-top:3px;align-items:center;">
+                  <span :class="'badge-'+lesson.level.toLowerCase().replace('ário','')" style="font-size:9px;">{{ lesson.level }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#334155;">{{ lesson.duration }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Conteúdo da lição -->
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+          <div v-if="!selectedLesson" style="flex:1;display:flex;align-items:center;justify-content:center;color:#334155;">
+            <div style="text-align:center;">
+              <div style="font-size:64px;opacity:0.15;margin-bottom:12px;">{{ languages.find(l=>l.id===currentLang)?.emoji }}</div>
+              <div style="font-family:'Syne',sans-serif;font-size:18px;">Selecione uma lição →</div>
+            </div>
+          </div>
+
+          <div v-else style="flex:1;display:flex;flex-direction:column;overflow:hidden;" class="anim-fade" :key="selectedLesson.id">
+            <!-- Lesson header -->
+            <div style="padding:16px 28px;border-bottom:1px solid #1e293b;flex-shrink:0;display:flex;align-items:flex-start;justify-content:space-between;">
+              <div>
+                <h2 style="font-family:'Syne',sans-serif;font-weight:900;font-size:22px;color:#fff;">
+                  {{ selectedLesson.emoji }} {{ selectedLesson.title }}
+                </h2>
+                <div style="display:flex;align-items:center;gap:12px;margin-top:6px;">
+                  <span :class="'badge-'+selectedLesson.level.toLowerCase().replace('ário','')">{{ selectedLesson.level }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#475569;">⏱ {{ selectedLesson.duration }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#ffd60a;">+{{ selectedLesson.xp }} XP</span>
+                </div>
+              </div>
+              <button v-if="!isDone(selectedLesson.id)"
+                @click="completeLesson(selectedLesson)"
+                style="display:flex;align-items:center;gap:8px;background:rgba(0,255,136,0.08);border:1px solid rgba(0,255,136,0.35);color:#00ff88;padding:10px 18px;border-radius:12px;cursor:pointer;font-family:'Syne',sans-serif;font-weight:700;font-size:13px;transition:all 0.15s;">
+                ✓ Marcar Concluída
+              </button>
+              <div v-else style="font-family:'Syne',sans-serif;font-weight:700;font-size:13px;color:#00ff88;display:flex;align-items:center;gap:6px;">
+                ✅ Concluída!
+              </div>
+            </div>
+
+            <!-- Tabs -->
+            <div style="display:flex;border-bottom:1px solid #1e293b;padding:0 28px;flex-shrink:0;">
+              <button v-for="tab in lessonTabs" :key="tab.id"
+                @click="activeTab=tab.id"
+                :class="activeTab===tab.id?'tab-active':''"
+                style="padding:12px 16px;border:none;background:transparent;cursor:pointer;font-family:'Syne',sans-serif;font-size:13px;font-weight:500;color:#475569;margin-right:6px;border-bottom:2px solid transparent;transition:all 0.15s;">
+                {{ tab.icon }} {{ tab.label }}
+              </button>
+            </div>
+
+            <!-- Teoria -->
+            <div v-show="activeTab==='theory'" style="flex:1;overflow-y:auto;padding:28px;">
+              <div style="max-width:700px;">
+                <pre style="font-family:'JetBrains Mono',monospace;font-size:13px;color:#94a3b8;white-space:pre-wrap;line-height:1.75;">{{ selectedLesson.theory }}</pre>
+                <div v-if="selectedLesson.tip" style="margin-top:22px;display:flex;align-items:flex-start;gap:12px;background:rgba(255,214,10,0.05);border:1px solid rgba(255,214,10,0.2);border-radius:12px;padding:14px 18px;">
+                  <span style="font-size:18px;">💡</span>
+                  <p style="font-family:'Syne',sans-serif;font-size:13px;color:#94a3b8;line-height:1.6;">{{ selectedLesson.tip }}</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Código -->
+            <div v-show="activeTab==='code'" style="flex:1;display:flex;flex-direction:column;padding:20px 28px;gap:14px;overflow:hidden;">
+              <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <div style="width:8px;height:8px;border-radius:50%;" :style="'background:'+langDotColor"></div>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#475569;">editor.{{ langExt }}</span>
+                </div>
+                <button @click="resetCode" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#475569;background:#111827;border:1px solid #1e293b;padding:5px 12px;border-radius:8px;cursor:pointer;">↺ Reset</button>
+              </div>
+              <div style="flex:1;display:flex;gap:14px;min-height:0;">
+                <textarea class="code-editor" style="flex:1;" v-model="editableCode" spellcheck="false"></textarea>
+                <!-- output preview -->
+                <div style="width:260px;display:flex;flex-direction:column;flex-shrink:0;">
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;margin-bottom:6px;">▼ output (simulado)</div>
+                  <div style="flex:1;background:#050810;border:1px solid #1e293b;border-radius:8px;padding:14px;font-family:'JetBrains Mono',monospace;font-size:11px;color:#00ff88;overflow-y:auto;line-height:1.7;">
+                    <div v-if="outputLines.length===0" style="color:#1e293b;">// Execute no Pydroid 3</div>
+                    <div v-for="(line,i) in outputLines" :key="i">
+                      <span style="color:#1e293b;user-select:none;">{{ String(i+1).padStart(2,'0') }}│</span> {{ line }}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- EXERCÍCIOS -->
+      <div v-else-if="currentView==='exercises'" style="height:100%;display:flex;overflow:hidden;" class="anim-fade">
+
+        <!-- Lista exercícios -->
+        <div style="width:250px;background:#0d1117;border-right:1px solid #1e293b;display:flex;flex-direction:column;flex-shrink:0;">
+          <!-- filtro -->
+          <div style="display:flex;gap:4px;padding:10px;border-bottom:1px solid #1e293b;flex-shrink:0;">
+            <button v-for="f in langFilters" :key="f.id"
+              @click="exFilter=f.id"
+              :style="'flex:1;padding:6px 4px;border:1px solid;border-radius:8px;cursor:pointer;font-family:JetBrains Mono,monospace;font-size:10px;font-weight:700;transition:all 0.15s;'+(exFilter===f.id?'border-color:rgba(0,212,255,0.4);color:#00d4ff;background:rgba(0,212,255,0.08)':'border-color:#1e293b;color:#475569;background:transparent')">
+              {{ f.label }}
+            </button>
+          </div>
+          <div style="flex:1;overflow-y:auto;padding:6px 0;">
+            <div v-for="ex in filteredExercises" :key="ex.id"
+              @click="selectExercise(ex)"
+              :style="'display:flex;align-items:flex-start;gap:10px;padding:11px 14px;cursor:pointer;transition:all 0.12s;border-left:2px solid transparent;'+(selectedEx && selectedEx.id===ex.id ? 'background:#141b2d;border-left-color:#00d4ff' : '')">
+              <span style="font-size:22px;flex-shrink:0;">{{ ex.emoji }}</span>
+              <div style="flex:1;min-width:0;">
+                <div style="font-family:'Syne',sans-serif;font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                  :style="selectedEx && selectedEx.id===ex.id ? 'color:#fff' : 'color:#64748b'">
+                  {{ ex.title }}
+                </div>
+                <div style="display:flex;gap:6px;align-items:center;margin-top:3px;">
+                  <span :class="'badge-'+ex.lang">{{ ex.lang }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#ffd60a;">+{{ ex.xp }} XP</span>
+                  <span v-if="isDoneEx(ex.id)" style="color:#00ff88;font-size:11px;">✓</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Painel exercício -->
+        <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">
+          <div v-if="!selectedEx" style="flex:1;display:flex;align-items:center;justify-content:center;color:#334155;">
+            <div style="text-align:center;">
+              <div style="font-size:60px;opacity:0.15;margin-bottom:12px;">💻</div>
+              <div style="font-family:'Syne',sans-serif;font-size:18px;">Selecione um exercício →</div>
+            </div>
+          </div>
+
+          <div v-else style="flex:1;display:flex;flex-direction:column;overflow:hidden;" class="anim-fade" :key="selectedEx.id">
+            <!-- Header -->
+            <div style="padding:14px 24px;border-bottom:1px solid #1e293b;flex-shrink:0;display:flex;align-items:flex-start;justify-content:space-between;">
+              <div>
+                <h2 style="font-family:'Syne',sans-serif;font-weight:900;font-size:20px;color:#fff;">{{ selectedEx.emoji }} {{ selectedEx.title }}</h2>
+                <div style="display:flex;gap:10px;margin-top:6px;align-items:center;">
+                  <span :class="'badge-'+selectedEx.lang">{{ selectedEx.lang }}</span>
+                  <span style="background:rgba(255,214,10,0.12);color:#ffd60a;border:1px solid rgba(255,214,10,0.3);border-radius:6px;padding:2px 8px;font-size:10px;font-family:'JetBrains Mono',monospace;">{{ selectedEx.level }}</span>
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#ffd60a;">+{{ selectedEx.xp }} XP</span>
+                </div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <button @click="showHint=!showHint" style="padding:8px 14px;border:1px solid rgba(255,214,10,0.35);background:rgba(255,214,10,0.06);color:#ffd60a;border-radius:10px;cursor:pointer;font-family:'Syne',sans-serif;font-size:12px;font-weight:600;">💡 Dica</button>
+                <button @click="showSol=!showSol" style="padding:8px 14px;border:1px solid #1e293b;background:transparent;color:#64748b;border-radius:10px;cursor:pointer;font-family:'Syne',sans-serif;font-size:12px;">👁 Solução</button>
+                <button v-if="!isDoneEx(selectedEx.id)"
+                  @click="completeExercise(selectedEx)"
+                  style="padding:8px 16px;border:1px solid rgba(0,255,136,0.35);background:rgba(0,255,136,0.08);color:#00ff88;border-radius:10px;cursor:pointer;font-family:'Syne',sans-serif;font-size:12px;font-weight:700;">
+                  ✅ Concluir
+                </button>
+                <span v-else style="font-family:'Syne',sans-serif;font-size:13px;font-weight:700;color:#00ff88;">✅ Concluído!</span>
+              </div>
+            </div>
+
+            <!-- Corpo -->
+            <div style="flex:1;display:flex;overflow:hidden;">
+              <div style="flex:1;display:flex;flex-direction:column;padding:18px 24px;gap:12px;overflow:hidden;">
+
+                <!-- Desafio -->
+                <div style="background:#111827;border:1px solid #1e293b;border-radius:12px;padding:16px;flex-shrink:0;">
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#00d4ff;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;">📋 Desafio</div>
+                  <pre style="font-family:'Syne',sans-serif;font-size:13px;color:#94a3b8;white-space:pre-wrap;line-height:1.65;">{{ selectedEx.desc }}</pre>
+                </div>
+
+                <!-- Dica -->
+                <div v-if="showHint" style="background:rgba(255,214,10,0.04);border:1px solid rgba(255,214,10,0.2);border-radius:10px;padding:12px 16px;flex-shrink:0;">
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#ffd60a;">💡 Dica: </span>
+                  <span style="font-family:'Syne',sans-serif;font-size:13px;color:#94a3b8;">{{ selectedEx.hint }}</span>
+                </div>
+
+                <!-- Editor -->
+                <div style="flex:1;display:flex;flex-direction:column;min-height:0;">
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;margin-bottom:6px;display:flex;align-items:center;gap:8px;">
+                    <div style="width:7px;height:7px;border-radius:50%;" :style="'background:'+exDotColor(selectedEx.lang)"></div>
+                    seu_codigo.{{ exLangExt(selectedEx.lang) }}
+                  </div>
+                  <textarea class="code-editor" style="flex:1;" v-model="exCode" spellcheck="false"></textarea>
+                </div>
+              </div>
+
+              <!-- Solução (painel lateral) -->
+              <div v-if="showSol" style="width:360px;border-left:1px solid #1e293b;display:flex;flex-direction:column;flex-shrink:0;background:rgba(13,17,23,0.6);">
+                <div style="padding:12px 16px;border-bottom:1px solid #1e293b;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+                  <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;text-transform:uppercase;letter-spacing:0.08em;">👁 Solução</span>
+                  <button @click="showSol=false" style="border:none;background:transparent;color:#475569;cursor:pointer;font-size:16px;">✕</button>
+                </div>
+                <div style="flex:1;overflow-y:auto;padding:16px;">
+                  <textarea class="code-editor" style="height:100%;min-height:300px;" :value="selectedEx.solution" readonly></textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- QUIZ -->
+      <div v-else-if="currentView==='quiz'" style="height:100%;overflow-y:auto;" class="anim-fade">
+        <div style="max-width:680px;margin:0 auto;padding:36px 24px;">
+
+          <!-- Start -->
+          <div v-if="quizState==='start'" style="text-align:center;" class="anim-up">
+            <div style="font-size:72px;margin-bottom:18px;">🧠</div>
+            <h2 style="font-family:'Syne',sans-serif;font-weight:900;font-size:36px;color:#fff;margin-bottom:10px;">Quiz Interativo</h2>
+            <p style="font-family:'Syne',sans-serif;color:#64748b;font-size:15px;margin-bottom:28px;">Teste seus conhecimentos em Python, JavaScript e Java!</p>
+            <!-- filtro -->
+            <div style="display:flex;justify-content:center;gap:10px;margin-bottom:28px;flex-wrap:wrap;">
+              <button v-for="f in quizLangFilters" :key="f.id"
+                @click="quizLang=f.id"
+                :style="'padding:10px 20px;border-radius:12px;border:1px solid;cursor:pointer;font-family:Syne,sans-serif;font-size:13px;font-weight:600;transition:all 0.15s;'+(quizLang===f.id?'border-color:rgba(0,212,255,0.5);color:#00d4ff;background:rgba(0,212,255,0.1)':'border-color:#1e293b;color:#475569;background:transparent')">
+                {{ f.emoji }} {{ f.label }}
+              </button>
+            </div>
+            <button @click="startQuiz"
+              style="background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.4);color:#00d4ff;font-family:'Syne',sans-serif;font-weight:900;font-size:18px;padding:16px 40px;border-radius:18px;cursor:pointer;transition:all 0.15s;box-shadow:0 0 24px rgba(0,212,255,0.15);">
+              ▶ Iniciar Quiz
+            </button>
+          </div>
+
+          <!-- Playing -->
+          <div v-else-if="quizState==='playing'" class="anim-up" :key="quizCurrent">
+            <!-- Progress -->
+            <div style="margin-bottom:24px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#475569;">Pergunta {{ quizCurrent+1 }} / {{ quizQuestions.length }}</span>
+                <span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:#00ff88;">{{ quizScore }}/{{ quizCurrent }} corretas</span>
+              </div>
+              <div style="height:6px;background:#1e293b;border-radius:3px;overflow:hidden;">
+                <div class="progress-fill" style="height:100%;background:linear-gradient(90deg,#00d4ff,#00ff88);border-radius:3px;"
+                  :style="'width:'+((quizCurrent/quizQuestions.length)*100)+'%'"></div>
+              </div>
+            </div>
+
+            <!-- Meta -->
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+              <span :class="'badge-'+quizQuestions[quizCurrent]?.lang">{{ quizQuestions[quizCurrent]?.lang }}</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;">{{ quizQuestions[quizCurrent]?.level }}</span>
+            </div>
+
+            <!-- Question -->
+            <h3 style="font-family:'Syne',sans-serif;font-weight:700;font-size:20px;color:#fff;line-height:1.4;margin-bottom:20px;">
+              {{ quizQuestions[quizCurrent]?.q }}
+            </h3>
+
+            <!-- Options -->
+            <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:18px;">
+              <div v-for="(opt,i) in quizQuestions[quizCurrent]?.opts" :key="i"
+                @click="quizAnswer(i)"
+                class="quiz-opt"
+                :class="getOptClass(i)"
+                style="display:flex;align-items:center;gap:14px;padding:14px 18px;border:1px solid #1e293b;border-radius:12px;background:#111827;"
+                :style="quizAnswered ? 'cursor:default' : 'cursor:pointer'">
+                <div style="width:30px;height:30px;border-radius:8px;border:1px solid currentColor;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;">
+                  {{ String.fromCharCode(65+i) }}
+                </div>
+                <span style="font-family:'Syne',sans-serif;font-size:14px;color:#94a3b8;">{{ opt }}</span>
+              </div>
+            </div>
+
+            <!-- Explanation -->
+            <div v-if="quizAnswered && quizExplanation"
+              style="border-radius:12px;padding:14px 18px;font-family:'Syne',sans-serif;font-size:13px;color:#94a3b8;margin-bottom:16px;"
+              :style="quizLastCorrect ? 'background:rgba(0,255,136,0.07);border:1px solid rgba(0,255,136,0.25)' : 'background:rgba(255,55,95,0.07);border:1px solid rgba(255,55,95,0.25)'">
+              <strong :style="quizLastCorrect ? 'color:#00ff88' : 'color:#ff375f'">
+                {{ quizLastCorrect ? '✅ Correto!' : '❌ Incorreto.' }}
+              </strong>
+              {{ quizExplanation }}
+            </div>
+
+            <button v-if="quizAnswered" @click="quizNext"
+              style="width:100%;background:rgba(0,212,255,0.08);border:1px solid rgba(0,212,255,0.35);color:#00d4ff;font-family:'Syne',sans-serif;font-weight:700;font-size:15px;padding:14px;border-radius:12px;cursor:pointer;transition:all 0.15s;">
+              {{ quizCurrent+1 < quizQuestions.length ? 'Próxima →' : 'Ver Resultado →' }}
+            </button>
+          </div>
+
+          <!-- Results -->
+          <div v-else-if="quizState==='done'" style="text-align:center;" class="anim-up">
+            <div style="font-size:80px;margin-bottom:12px;">{{ quizResultEmoji }}</div>
+            <h2 style="font-family:'Syne',sans-serif;font-weight:900;font-size:32px;color:#fff;margin-bottom:6px;">{{ quizResultMsg }}</h2>
+            <div style="font-family:'Syne',sans-serif;font-weight:900;font-size:56px;margin-bottom:6px;"
+              :style="quizPct>=70?'color:#00ff88':quizPct>=40?'color:#ffd60a':'color:#ff375f'">
+              {{ quizScore }}/{{ quizQuestions.length }}
+            </div>
+            <div style="font-family:'JetBrains Mono',monospace;color:#475569;margin-bottom:8px;">{{ quizPct }}% de acerto</div>
+            <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:18px;color:#ffd60a;margin-bottom:28px;">+{{ quizXpEarned }} XP ganhos!</div>
+            <button @click="quizRestart"
+              style="background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.4);color:#00d4ff;font-family:'Syne',sans-serif;font-weight:900;font-size:16px;padding:14px 32px;border-radius:16px;cursor:pointer;">
+              🔄 Novo Quiz
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- IA TUTOR -->
+      <div v-else-if="currentView==='ai'" style="height:100%;display:flex;flex-direction:column;overflow:hidden;" class="anim-fade">
+        <!-- Header -->
+        <div style="padding:14px 28px;border-bottom:1px solid #1e293b;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <h2 style="font-family:'Syne',sans-serif;font-weight:900;font-size:20px;color:#fff;">🤖 CodeMaster AI</h2>
+            <p style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;">Tutor inteligente de programação</p>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div class="pulse-glow" style="width:7px;height:7px;border-radius:50%;" :style="'background:'+(aiOnline?'#00ff88':'#ff6b35')"></div>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:11px;" :style="'color:'+(aiOnline?'#00ff88':'#ff6b35')">{{ aiOnline?'Online':'Offline' }}</span>
+            </div>
+            <button @click="clearChat" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#475569;background:#111827;border:1px solid #1e293b;padding:6px 12px;border-radius:8px;cursor:pointer;">🗑 Limpar</button>
+          </div>
+        </div>
+
+        <!-- Quick prompts -->
+        <div style="display:flex;gap:8px;padding:10px 20px;border-bottom:1px solid #1e293b;overflow-x:auto;flex-shrink:0;">
+          <button v-for="q in quickPrompts" :key="q"
+            @click="sendMessage(q)"
+            style="flex-shrink:0;font-family:'JetBrains Mono',monospace;font-size:11px;color:#475569;background:#111827;border:1px solid #1e293b;padding:6px 12px;border-radius:8px;cursor:pointer;transition:all 0.15s;white-space:nowrap;">
+            {{ q }}
+          </button>
+        </div>
+
+        <!-- Messages -->
+        <div ref="chatEl" style="flex:1;overflow-y:auto;padding:20px 28px;display:flex;flex-direction:column;gap:16px;">
+          <div v-if="chatMessages.length===0" style="flex:1;display:flex;align-items:center;justify-content:center;color:#334155;">
+            <div style="text-align:center;">
+              <div style="font-size:64px;opacity:0.2;margin-bottom:14px;">🤖</div>
+              <div style="font-family:'Syne',sans-serif;font-size:18px;color:#334155;">Olá! Sou o CodeMaster AI</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#1e293b;margin-top:6px;">Pergunte sobre Python, JS ou Java!</div>
+            </div>
+          </div>
+          <div v-for="msg in chatMessages" :key="msg.id"
+            style="display:flex;gap:12px;max-width:100%;"
+            :style="msg.role==='user' ? 'justify-content:flex-end' : 'justify-content:flex-start'">
+            <div v-if="msg.role!=='user'" style="width:34px;height:34px;border-radius:10px;background:rgba(191,90,242,0.15);border:1px solid rgba(191,90,242,0.25);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px;">🤖</div>
+            <div style="max-width:68%;">
+              <div class="chat-user" v-if="msg.role==='user'" style="padding:12px 18px;">
+                <pre style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#00d4ff;white-space:pre-wrap;line-height:1.65;">{{ msg.content }}</pre>
+              </div>
+              <div class="chat-ai" v-else style="padding:12px 18px;">
+                <pre style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#94a3b8;white-space:pre-wrap;line-height:1.65;">{{ msg.content }}</pre>
+              </div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:#334155;margin-top:4px;"
+                :style="msg.role==='user'?'text-align:right':''">{{ msg.time }}</div>
+            </div>
+            <div v-if="msg.role==='user'" style="width:34px;height:34px;border-radius:10px;background:rgba(0,212,255,0.12);border:1px solid rgba(0,212,255,0.22);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px;">👤</div>
+          </div>
+          <!-- Typing -->
+          <div v-if="chatLoading" style="display:flex;gap:12px;">
+            <div style="width:34px;height:34px;border-radius:10px;background:rgba(191,90,242,0.15);border:1px solid rgba(191,90,242,0.25);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:18px;">🤖</div>
+            <div class="chat-ai" style="padding:14px 18px;display:flex;align-items:center;gap:6px;">
+              <div v-for="i in 3" :key="i" class="pulse-glow" style="width:8px;height:8px;border-radius:50%;background:#bf5af2;" :style="'animation-delay:'+(i*0.2)+'s'"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Input -->
+        <div style="padding:16px 28px;border-top:1px solid #1e293b;flex-shrink:0;display:flex;gap:12px;">
+          <input v-model="chatInput"
+            @keydown.enter.prevent="sendCurrentMsg"
+            :disabled="chatLoading"
+            style="flex:1;background:#111827;border:1px solid #1e293b;border-radius:12px;padding:12px 18px;font-family:'JetBrains Mono',monospace;font-size:13px;color:#e2e8f0;outline:none;transition:border-color 0.15s;"
+            placeholder="Pergunte sobre Python, JS, Java... (Enter para enviar)">
+          <button @click="sendCurrentMsg"
+            :disabled="chatLoading || !chatInput.trim()"
+            style="background:rgba(191,90,242,0.12);border:1px solid rgba(191,90,242,0.4);color:#bf5af2;padding:12px 22px;border-radius:12px;cursor:pointer;font-family:'Syne',sans-serif;font-weight:900;font-size:16px;transition:all 0.15s;min-width:52px;">
+            {{ chatLoading ? '...' : '➤' }}
+          </button>
+        </div>
+      </div>
+
+      <!-- PROGRESSO -->
+      <div v-else-if="currentView==='progress'" style="height:100%;overflow-y:auto;padding:36px;" class="anim-fade">
+        <div style="max-width:900px;margin:0 auto;">
+          <h2 style="font-family:'Syne',sans-serif;font-weight:900;font-size:36px;color:#fff;margin-bottom:28px;">📊 Seu Progresso</h2>
+
+          <!-- Stats grid -->
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:28px;">
+            <div v-for="(s,i) in progressStats" :key="s.label"
+              :style="'animation-delay:'+(i*0.07)+'s;background:#111827;border:1px solid #1e293b;border-radius:18px;padding:22px;'"
+              class="anim-up">
+              <div style="font-size:28px;margin-bottom:10px;">{{ s.emoji }}</div>
+              <div style="font-family:'Syne',sans-serif;font-weight:900;font-size:36px;" :style="'color:'+s.color">{{ s.value }}</div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;margin-top:4px;text-transform:uppercase;letter-spacing:0.08em;">{{ s.label }}</div>
+            </div>
+          </div>
+
+          <!-- XP bar -->
+          <div style="background:#111827;border:1px solid #1e293b;border-radius:18px;padding:22px;margin-bottom:22px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+              <span style="font-family:'Syne',sans-serif;font-weight:700;color:#fff;font-size:15px;">Nível {{ progress.level }} → {{ progress.level+1 }}</span>
+              <span style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#00d4ff;">{{ xpInLevel }}/500 XP</span>
+            </div>
+            <div style="height:12px;background:#1e293b;border-radius:6px;overflow:hidden;">
+              <div class="xp-bar progress-fill" style="height:100%;border-radius:6px;" :style="'width:'+xpLevelPct+'%'"></div>
+            </div>
+          </div>
+
+          <!-- Per language -->
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:22px;">
+            <div v-for="lang in languages" :key="lang.id"
+              style="background:#111827;border:1px solid #1e293b;border-radius:16px;padding:18px;">
+              <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;">
+                <span style="font-size:28px;">{{ lang.emoji }}</span>
+                <div>
+                  <div style="font-family:'Syne',sans-serif;font-weight:700;color:#fff;font-size:15px;">{{ lang.name }}</div>
+                  <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#475569;">{{ langDone(lang.id) }}/{{ lang.lessons }} lições</div>
+                </div>
+              </div>
+              <div style="height:6px;background:#1e293b;border-radius:3px;overflow:hidden;">
+                <div class="progress-fill" style="height:100%;border-radius:3px;" :style="'width:'+langPct(lang.id)+'%;background:'+lang.color"></div>
+              </div>
+              <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:#334155;margin-top:6px;">{{ langPct(lang.id).toFixed(0) }}% completo</div>
+            </div>
+          </div>
+
+          <!-- Conquistas -->
+          <div style="background:#111827;border:1px solid #1e293b;border-radius:18px;padding:22px;">
+            <h3 style="font-family:'Syne',sans-serif;font-weight:700;font-size:18px;color:#fff;margin-bottom:18px;">🏅 Conquistas</h3>
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+              <div v-for="ach in achievements" :key="ach.id"
+                style="border-radius:14px;padding:16px;text-align:center;border:1px solid;"
+                :style="ach.earned ? 'background:#161d2d;border-color:#1e293b' : 'background:#0d1117;border-color:#0d1117;opacity:0.38'">
+                <div style="font-size:28px;margin-bottom:8px;">{{ ach.earned ? ach.emoji : '🔒' }}</div>
+                <div style="font-family:'Syne',sans-serif;font-size:11px;font-weight:700;" :style="ach.earned ? 'color:#fff' : 'color:#334155'">{{ ach.name }}</div>
+                <div style="font-family:'JetBrains Mono',monospace;font-size:10px;margin-top:4px;" :style="ach.earned ? 'color:#ffd60a' : 'color:#1e293b'">{{ ach.earned ? '+'+ach.xp+' XP' : ach.req }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /views -->
+  </div><!-- /main -->
+
+  <!-- Toast -->
+  <div v-if="toast.show"
+    style="position:fixed;bottom:24px;right:24px;z-index:10000;display:flex;align-items:center;gap:10px;padding:14px 22px;border-radius:14px;font-family:'Syne',sans-serif;font-size:13px;font-weight:600;transition:all 0.3s;"
+    :style="toast.type==='success' ? 'background:#0d1117;border:1px solid rgba(0,255,136,0.4);color:#00ff88;box-shadow:0 0 20px rgba(0,255,136,0.15)' : 'background:#0d1117;border:1px solid rgba(255,107,53,0.4);color:#ff6b35;'">
+    {{ toast.type==='success'?'✅':'⚡' }} {{ toast.message }}
+  </div>
+
+</div><!-- /app -->
+
+<!-- ════════════════════════════════════════════ -->
+<!-- SCRIPTS — carregados do servidor local       -->
+<!-- ════════════════════════════════════════════ -->
+<script>
+// Tenta carregar Vue do servidor, fallback para CDN
+window._loadMsg = document.getElementById('load-msg');
+function updateLoad(msg) { if(window._loadMsg) window._loadMsg.textContent = msg; }
+</script>
+
+<!-- Vue.js — do servidor Flask (auto-baixado) -->
+<script src="/lib/vue.min.js" onerror="window._vueFailed=true"></script>
+<script>
+if(window._vueFailed || typeof Vue === 'undefined') {
+  updateLoad('carregando do CDN...');
+  document.write('<script src="https://unpkg.com/vue@3.4.21/dist/vue.global.prod.js"><\/script>');
+}
+</script>
+
+<!-- Highlight.js (syntax highlighting) -->
+<script src="/lib/hljs.min.js"></script>
+<script src="/lib/hljs-python.min.js"></script>
+<script src="/lib/hljs-js.min.js"></script>
+<script src="/lib/hljs-java.min.js"></script>
+<link rel="stylesheet" href="/lib/atom-dark.min.css">
+
+<!-- Tailwind (do servidor) -->
+<script src="/lib/tailwind.min.js"
+  onerror="document.write('<script src=https://cdn.tailwindcss.com><\/script>')"></script>
+
+<script>
+updateLoad('iniciando app...');
+
+const { createApp, ref, computed, onMounted, watch, nextTick } = Vue;
+
+// ─ API helper ─────────────────────────────────
+const API = {
+  get: async (p) => { const r = await fetch('/api'+p); return r.json(); },
+  post: async (p, b) => {
+    const r = await fetch('/api'+p, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(b) });
+    return r.json();
+  }
+};
+
+// ─ Vue App ─────────────────────────────────────
+const app = createApp({
+  setup() {
+    // ── estado global ──
+    const currentView   = ref('home');
+    const currentLang   = ref('python');
+    const progress      = ref({ xp:0, level:1, lessons:[], exercises:[], quizzes_taken:0, quiz_correct:0 });
+    const languages     = ref([]);
+    const aiOnline      = ref(false);
+    const toast         = ref({ show:false, message:'', type:'success' });
+
+    // ── lições ──
+    const lessons          = ref([]);
+    const selectedLesson   = ref(null);
+    const activeTab        = ref('theory');
+    const editableCode     = ref('');
+    const lessonTabs       = [{ id:'theory', icon:'📖', label:'Teoria' }, { id:'code', icon:'💻', label:'Código' }];
+
+    // ── exercícios ──
+    const exercises     = ref([]);
+    const selectedEx    = ref(null);
+    const exCode        = ref('');
+    const exFilter      = ref('all');
+    const showHint      = ref(false);
+    const showSol       = ref(false);
+
+    // ── quiz ──
+    const quizState       = ref('start');
+    const quizQuestions   = ref([]);
+    const quizIds         = ref([]);
+    const quizCurrent     = ref(0);
+    const quizScore       = ref(0);
+    const quizAnswered    = ref(false);
+    const quizLang        = ref('all');
+    const quizExplanation = ref('');
+    const quizLastCorrect = ref(false);
+    const quizOptClasses  = ref({});
+    const quizDetailedResults = ref([]);
+
+    // ── ai chat ──
+    const chatMessages  = ref([]);
+    const chatHistory   = ref([]);
+    const chatInput     = ref('');
+    const chatLoading   = ref(false);
+    const chatEl        = ref(null);
+    let   chatMsgId     = 0;
+
+    // ── nav ──
+    const navItems = [
+      { id:'home',      icon:'🏠', label:'Início' },
+      { id:'exercises', icon:'💻', label:'Exercícios' },
+      { id:'quiz',      icon:'🧠', label:'Quiz' },
+      { id:'ai',        icon:'🤖', label:'IA Tutor' },
+      { id:'progress',  icon:'📊', label:'Progresso' },
+    ];
+    const langFilters     = [
+      { id:'all', label:'Todos' },
+      { id:'python', label:'🐍 Py' },
+      { id:'javascript', label:'⚡ JS' },
+      { id:'java', label:'☕ Java' },
+    ];
+    const quizLangFilters = [
+      { id:'all', label:'Todas', emoji:'🎯' },
+      { id:'python', label:'Python', emoji:'🐍' },
+      { id:'javascript', label:'JavaScript', emoji:'⚡' },
+      { id:'java', label:'Java', emoji:'☕' },
+    ];
+    const quickPrompts = [
+      'O que é Python?','Explique loops','O que são funções?',
+      'JS vs Python','O que é OOP?','Como funciona recursão?',
+    ];
+
+    // ── computed ──
+    const xpPercent = computed(() => (progress.value.xp % 500) / 5);
+    const xpToNext  = computed(() => 500 - (progress.value.xp % 500));
+    const xpInLevel = computed(() => progress.value.xp % 500);
+    const xpLevelPct = computed(() => xpInLevel.value / 5);
+
+    const pageTitle = computed(() => {
+      const m = { home:'Início', lessons:'Lições', exercises:'Exercícios', quiz:'Quiz', ai:'IA Tutor', progress:'Progresso' };
+      return m[currentView.value] || '';
+    });
+    const pageCrumb = computed(() => {
+      if (currentView.value === 'lessons') return languages.value.find(l => l.id === currentLang.value)?.name;
+      return null;
+    });
+
+    const homeStats = computed(() => [
+      { label:'XP Total',    value: progress.value.xp || 0,                   color:'#ffd60a' },
+      { label:'Nível',       value: progress.value.level || 1,                color:'#00d4ff' },
+      { label:'Lições',      value: progress.value.lessons?.length || 0,      color:'#3b82f6' },
+      { label:'Exercícios',  value: progress.value.exercises?.length || 0,    color:'#00ff88' },
+    ]);
+
+    const progressStats = computed(() => [
+      { emoji:'⚡', label:'XP Total',      value: progress.value.xp || 0,                color:'#ffd60a' },
+      { emoji:'🏆', label:'Nível',          value: progress.value.level || 1,            color:'#00d4ff' },
+      { emoji:'📖', label:'Lições',         value: progress.value.lessons?.length || 0,  color:'#3b82f6' },
+      { emoji:'💻', label:'Exercícios',     value: progress.value.exercises?.length || 0,color:'#00ff88' },
+      { emoji:'🧠', label:'Quizzes',        value: progress.value.quizzes_taken || 0,    color:'#bf5af2' },
+      { emoji:'🎯', label:'Quiz Corretas',  value: progress.value.quiz_correct  || 0,    color:'#ff6b35' },
+    ]);
+
+    const filteredExercises = computed(() =>
+      exFilter.value === 'all' ? exercises.value : exercises.value.filter(e => e.lang === exFilter.value)
+    );
+
+    const langDotColor = computed(() =>
+      ({ python:'#3b82f6', javascript:'#fbbf24', java:'#ef4444' }[currentLang.value] || '#00d4ff')
+    );
+    const langExt = computed(() => ({ python:'py', javascript:'js', java:'java' }[currentLang.value] || 'txt'));
+
+    const quizPct = computed(() =>
+      quizQuestions.value.length ? Math.round((quizScore.value / quizQuestions.value.length) * 100) : 0
+    );
+    const quizXpEarned   = computed(() => quizScore.value * 20);
+    const quizResultEmoji = computed(() => quizPct.value >= 80 ? '🏆' : quizPct.value >= 60 ? '👍' : '📚');
+    const quizResultMsg   = computed(() => quizPct.value >= 80 ? 'Excelente!' : quizPct.value >= 60 ? 'Muito bem!' : 'Continue estudando!');
+
+    const achievements = computed(() => {
+      const p = progress.value;
+      const ls = p.lessons || [];
+      const ex = p.exercises || [];
+      return [
+        { id:1,  emoji:'🐍', name:'Pythonista',    req:'1ª lição Py',  xp:25,  earned: ls.some(l=>l.startsWith('py'))   },
+        { id:2,  emoji:'⚡', name:'JS Dev',         req:'1ª lição JS',  xp:25,  earned: ls.some(l=>l.startsWith('js'))   },
+        { id:3,  emoji:'☕', name:'Java Dev',       req:'1ª lição Java',xp:25,  earned: ls.some(l=>l.startsWith('ja'))   },
+        { id:4,  emoji:'💻', name:'Exercitador',   req:'1 exercício',  xp:50,  earned: ex.length >= 1                    },
+        { id:5,  emoji:'🎯', name:'Primeiro Quiz',  req:'1 quiz',       xp:50,  earned: p.quizzes_taken >= 1              },
+        { id:6,  emoji:'🔥', name:'5 Lições',      req:'5 lições',     xp:100, earned: ls.length >= 5                    },
+        { id:7,  emoji:'⭐', name:'100 XP',         req:'100 XP',       xp:25,  earned: p.xp >= 100                       },
+        { id:8,  emoji:'💎', name:'500 XP',         req:'500 XP',       xp:50,  earned: p.xp >= 500                       },
+        { id:9,  emoji:'🚀', name:'1000 XP',        req:'1000 XP',      xp:100, earned: p.xp >= 1000                      },
+        { id:10, emoji:'👑', name:'Mestre',         req:'Nível 5',      xp:200, earned: p.level >= 5                      },
+        { id:11, emoji:'🏆', name:'Completo',       req:'10 lições',    xp:200, earned: ls.length >= 10                   },
+        { id:12, emoji:'🌟', name:'Dedicado',       req:'5 exercícios', xp:150, earned: ex.length >= 5                    },
+      ];
+    });
+
+    // ── helpers ──
+    const isDone   = (id) => (progress.value.lessons   || []).includes(id);
+    const isDoneEx = (id) => (progress.value.exercises || []).includes(id);
+    const langDone = (langId) => (progress.value.lessons || []).filter(id => id.startsWith(langId.slice(0,2))).length;
+    const langPct  = (langId) => {
+      const total = languages.value.find(l => l.id === langId)?.lessons || 1;
+      return Math.min(100, (langDone(langId) / total) * 100);
+    };
+    const exDotColor = (lang) => ({ python:'#3b82f6', javascript:'#fbbf24', java:'#ef4444' }[lang] || '#00d4ff');
+    const exLangExt  = (lang) => ({ python:'py', javascript:'js', java:'java' }[lang] || 'txt');
+
+    const outputLines = computed(() => {
+      const lines = [];
+      const code  = editableCode.value;
+      const re    = /print\((.+?)\)/g;
+      let m;
+      while ((m = re.exec(code)) !== null) {
+        let c = m[1].trim().replace(/^f?["'`]|["'`]$/g, '').replace(/\\n/g, ' ');
+        lines.push('→ ' + c.substring(0, 70));
+      }
+      return lines.slice(0, 20);
+    });
+
+    // ── actions ──
+    const navigate = async (view, lang = null) => {
+      currentView.value = view;
+      if (lang) currentLang.value = lang;
+      if (view === 'lessons') await loadLessons();
+    };
+
+    const loadLessons = async () => {
+      const data = await API.get(`/lessons/${currentLang.value}`);
+      lessons.value = data;
+      if (data.length && !selectedLesson.value) selectLesson(data[0]);
+      else if (data.length) {
+        const cur = data.find(l => l.id === selectedLesson.value?.id);
+        if (!cur) selectLesson(data[0]);
+      }
+    };
+
+    const selectLesson = (lesson) => {
+      selectedLesson.value = lesson;
+      editableCode.value   = lesson.code || '';
+      activeTab.value      = 'theory';
+    };
+
+    const resetCode = () => {
+      if (selectedLesson.value) editableCode.value = selectedLesson.value.code || '';
+    };
+
+    const completeLesson = async (lesson) => {
+      await API.post('/progress', { action:'complete_lesson', lesson_id:lesson.id });
+      await loadProgress();
+      showToast(`+50 XP! Lição concluída! 🎉`);
+    };
+
+    const selectExercise = (ex) => {
+      selectedEx.value = ex;
+      exCode.value     = ex.starter || '';
+      showHint.value   = false;
+      showSol.value    = false;
+    };
+
+    const completeExercise = async (ex) => {
+      await API.post('/progress', { action:'complete_exercise', exercise_id:ex.id });
+      await loadProgress();
+      showToast(`+100 XP! Exercício concluído! 💪`);
+    };
+
+    // ── quiz ──
+    const startQuiz = async () => {
+      const url = quizLang.value !== 'all'
+        ? `/quiz/random?lang=${quizLang.value}&count=8`
+        : '/quiz/random?count=10';
+      const data = await API.get(url);
+      quizQuestions.value  = data.questions;
+      quizIds.value        = data.ids;
+      quizCurrent.value    = 0;
+      quizScore.value      = 0;
+      quizAnswered.value   = false;
+      quizExplanation.value = '';
+      quizOptClasses.value  = {};
+      quizDetailedResults.value = [];
+      quizState.value      = 'playing';
+    };
+
+    const quizAnswer = async (idx) => {
+      if (quizAnswered.value) return;
+      quizAnswered.value = true;
+      const qid    = quizIds.value[quizCurrent.value];
+      const result = await API.post('/quiz/check', { answers: { [qid]: idx } });
+      const r      = result.results[0];
+      quizLastCorrect.value   = r.correct;
+      quizExplanation.value   = r.explanation;
+      if (r.correct) quizScore.value++;
+      quizDetailedResults.value.push(r);
+
+      const cls = {};
+      quizQuestions.value[quizCurrent.value].opts.forEach((_, i) => {
+        if (i === r.right_answer)      cls[i] = 'quiz-correct';
+        else if (i === idx && !r.correct) cls[i] = 'quiz-wrong';
+        else                           cls[i] = 'quiz-dim';
+      });
+      quizOptClasses.value = cls;
+      await loadProgress();
+    };
+
+    const getOptClass = (i) => quizOptClasses.value[i] || '';
+
+    const quizNext = () => {
+      if (quizCurrent.value + 1 >= quizQuestions.value.length) {
+        quizState.value = 'done';
+      } else {
+        quizCurrent.value++;
+        quizAnswered.value    = false;
+        quizExplanation.value = '';
+        quizOptClasses.value  = {};
+      }
+    };
+
+    const quizRestart = () => { quizState.value = 'start'; };
+
+    // ── ai chat ──
+    const scrollChat = () => nextTick(() => {
+      if (chatEl.value) chatEl.value.scrollTop = chatEl.value.scrollHeight;
+    });
+
+    const ftime = () => new Date().toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
+
+    const sendCurrentMsg = () => {
+      if (chatInput.value.trim() && !chatLoading.value) {
+        sendMessage(chatInput.value.trim());
+        chatInput.value = '';
+      }
+    };
+
+    const sendMessage = async (text) => {
+      if (!text) return;
+      chatMessages.value.push({ id:++chatMsgId, role:'user', content:text, time:ftime() });
+      chatHistory.value.push({ role:'user', content:text });
+      chatLoading.value = true;
+      scrollChat();
+      const result = await API.post('/ai/chat', { messages: chatHistory.value });
+      chatHistory.value.push({ role:'assistant', content:result.response });
+      chatMessages.value.push({ id:++chatMsgId, role:'assistant', content:result.response, time:ftime() });
+      chatLoading.value = false;
+      scrollChat();
+    };
+
+    const clearChat = () => {
+      chatMessages.value = [];
+      chatHistory.value  = [];
+    };
+
+    // ── toast ──
+    const showToast = (msg, type='success') => {
+      toast.value = { show:true, message:msg, type };
+      setTimeout(() => toast.value.show = false, 3000);
+    };
+
+    // ── load data ──
+    const loadProgress = async () => {
+      const data = await API.get('/progress');
+      progress.value = data;
+    };
+
+    const checkAI = async () => {
+      try {
+        const r = await API.post('/ai/chat', { messages:[{role:'user',content:'ping'}] });
+        aiOnline.value = !r.offline;
+      } catch { aiOnline.value = false; }
+    };
+
+    onMounted(async () => {
+      const [langs, prog, exs] = await Promise.all([
+        API.get('/languages'),
+        API.get('/progress'),
+        API.get('/exercises'),
+      ]);
+      languages.value  = langs;
+      progress.value   = prog;
+      exercises.value  = exs;
+      await loadLessons();
+      checkAI();
+
+      // Esconde loading screen
+      const ls = document.getElementById('loading-screen');
+      if (ls) ls.style.display = 'none';
+    });
+
+    watch(currentLang, () => {
+      if (currentView.value === 'lessons') {
+        selectedLesson.value = null;
+        loadLessons();
+      }
+    });
+
+    return {
+      currentView, currentLang, progress, languages, aiOnline, toast,
+      navItems, langFilters, quizLangFilters, quickPrompts,
+      xpPercent, xpToNext, xpInLevel, xpLevelPct,
+      pageTitle, pageCrumb, homeStats, progressStats, achievements,
+      // lessons
+      lessons, selectedLesson, activeTab, editableCode, lessonTabs, outputLines,
+      langDotColor, langExt, isDone, langDone, langPct,
+      selectLesson, resetCode, completeLesson,
+      // exercises
+      exercises, selectedEx, exCode, exFilter, showHint, showSol, filteredExercises,
+      exDotColor, exLangExt, isDoneEx, selectExercise, completeExercise,
+      // quiz
+      quizState, quizQuestions, quizCurrent, quizScore, quizAnswered, quizLang,
+      quizExplanation, quizLastCorrect, quizOptClasses, quizPct, quizXpEarned,
+      quizResultEmoji, quizResultMsg, getOptClass,
+      startQuiz, quizAnswer, quizNext, quizRestart,
+      // chat
+      chatMessages, chatInput, chatLoading, chatEl,
+      sendCurrentMsg, sendMessage, clearChat,
+      // nav
+      navigate, loadProgress, showToast,
+    };
+  }
+});
+
+app.mount('#app');
+console.log('[CodeMaster Pro] Vue montado com sucesso!');
+</script>
+</body>
+</html>
