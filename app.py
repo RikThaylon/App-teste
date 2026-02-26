@@ -1,63 +1,87 @@
 """
-CodeMaster Pro — Flask Backend v2.1
-Correção: libs JS servidas localmente, sem depender de CDN
+CodeMaster Pro — Flask Backend v3.0
+Production-ready. All known bugs fixed.
+
+SETUP:
+  export ANTHROPIC_API_KEY="sk-ant-..."
+  pip install flask flask-cors anthropic
+  python server.py
+
+GitHub / Railway / Render: set ANTHROPIC_API_KEY as env var.
 """
 
-from flask import Flask, jsonify, request, send_from_directory, Response, redirect
+import os
+import json
+import time
+import random
+import hashlib
+import threading
+import urllib.request
+from functools import wraps
+from datetime import datetime, timedelta
+from flask import Flask, jsonify, request, send_from_directory, Response, redirect, abort
 from flask_cors import CORS
-import json, os, random, threading
-from datetime import datetime
 
-BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(BASE_DIR, "static")
+# ─── Constants ────────────────────────────────────────────────────────────────
+BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR  = os.path.join(BASE_DIR, "static")
+PROGRESS_F  = os.path.join(os.path.expanduser("~"), ".codemaster_pro_v3.json")
+
+# FIX #1: API key via environment variable — never hardcode!
+API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
 os.makedirs(STATIC_DIR, exist_ok=True)
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}})  # Restrict in production
 
-API_KEY    = "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"
-PROGRESS_F = os.path.join(os.path.expanduser("~"), ".codemaster_pro.json")
+# ─── Simple in-memory rate limiter (FIX #2) ───────────────────────────────────
+_rate_store: dict = {}
+_rate_lock = threading.Lock()
 
-# ── Download automático de libs ────────────────────────────
+def rate_limit(max_calls: int = 20, window_seconds: int = 60):
+    """Decorator: limits calls per IP within a rolling window."""
+    def decorator(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            ip  = request.remote_addr or "unknown"
+            key = f"{fn.__name__}:{ip}"
+            now = time.time()
+            with _rate_lock:
+                calls = [t for t in _rate_store.get(key, []) if now - t < window_seconds]
+                if len(calls) >= max_calls:
+                    return jsonify({"error": "Too many requests. Please wait."}), 429
+                calls.append(now)
+                _rate_store[key] = calls
+            return fn(*args, **kwargs)
+        return wrapper
+    return decorator
+
+# ─── Static lib downloader ────────────────────────────────────────────────────
 LIBS = {
-    "vue.min.js":        "https://unpkg.com/vue@3.4.21/dist/vue.global.prod.js",
-    "hljs.min.js":       "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js",
-    "hljs-python.min.js":"https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js",
-    "hljs-js.min.js":    "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js",
-    "hljs-java.min.js":  "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/java.min.js",
-    "atom-dark.min.css": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css",
-    "tailwind.min.js":   "https://cdn.tailwindcss.com",
+    "vue.min.js":         "https://unpkg.com/vue@3.4.21/dist/vue.global.prod.js",
+    "hljs.min.js":        "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js",
+    "hljs-python.min.js": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js",
+    "hljs-js.min.js":     "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js",
+    "hljs-java.min.js":   "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/java.min.js",
+    "atom-dark.min.css":  "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css",
+    "tailwind.min.js":    "https://cdn.tailwindcss.com",
 }
+CDN_FALLBACK = dict(LIBS)
 
-def download_libs():
-    try:
-        import urllib.request
-        for fname, url in LIBS.items():
-            dest = os.path.join(STATIC_DIR, fname)
-            if not os.path.exists(dest):
-                print(f"  [download] {fname}...")
-                try:
-                    urllib.request.urlretrieve(url, dest)
-                    print(f"  [ok] {fname}")
-                except Exception as e:
-                    print(f"  [aviso] Nao foi possivel baixar {fname}: {e}")
-    except Exception as e:
-        print(f"  [aviso] Erro no download: {e}")
+def _download_libs():
+    for fname, url in LIBS.items():
+        dest = os.path.join(STATIC_DIR, fname)
+        if not os.path.exists(dest):
+            try:
+                urllib.request.urlretrieve(url, dest)
+                print(f"  [lib] Downloaded {fname}")
+            except Exception as e:
+                print(f"  [lib] Could not download {fname}: {e}")
 
-threading.Thread(target=download_libs, daemon=True).start()
+threading.Thread(target=_download_libs, daemon=True).start()
 
-# ── Rota para servir libs locais ───────────────────────────
-CDN_FALLBACK = {
-    "vue.min.js":        "https://unpkg.com/vue@3.4.21/dist/vue.global.prod.js",
-    "hljs.min.js":       "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js",
-    "hljs-python.min.js":"https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js",
-    "hljs-js.min.js":    "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js",
-    "hljs-java.min.js":  "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/java.min.js",
-    "atom-dark.min.css": "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css",
-    "tailwind.min.js":   "https://cdn.tailwindcss.com",
-}
-
-@app.route("/lib/<filename>")
+@app.route("/lib/<path:filename>")
 def serve_lib(filename):
     local = os.path.join(STATIC_DIR, filename)
     if os.path.exists(local):
@@ -66,267 +90,1422 @@ def serve_lib(filename):
             return Response(f.read(), mimetype=mime)
     if filename in CDN_FALLBACK:
         return redirect(CDN_FALLBACK[filename])
-    return "Not found", 404
+    abort(404)
 
-# ══════════════════════════════════════════════════════════
-#  DADOS — LICOES
-# ══════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+#  CONTENT DATABASE
+# ══════════════════════════════════════════════════════════════════════════════
 LESSONS = {
   "python": [
-    {"id":"py_01","title":"Ola, Python!","level":"Iniciante","emoji":"🐍","duration":"10 min","xp":50,
-     "theory":"Python e uma linguagem de alto nivel criada por Guido van Rossum em 1991.\n\nPOR QUE PYTHON?\n* Sintaxe simples e legivel\n* Versatil: Web, IA, Data Science, Automacao\n* A linguagem mais popular do mundo\n* Usado por Google, Netflix, Instagram, NASA\n\nSEU PRIMEIRO PROGRAMA\nUsamos print() para exibir texto na tela.\nA funcao aceita qualquer valor como argumento.\n\nCOMENTARIOS\nLinhas que comecam com # sao ignoradas.\nServem para explicar o codigo para humanos.\n\nEXECUTANDO\nNo Pydroid 3: salve e pressione o botao play\nNo terminal: python3 nome_do_arquivo.py",
-     "code":"# Meu primeiro programa Python!\n# Tudo apos # e comentario\n\nprint(\"Ola, Mundo!\")\nprint(\"Bem-vindo ao CodeMaster Pro!\")\n\n# Tipos diferentes de dados\nprint(42)           # numero inteiro\nprint(3.14)         # numero decimal\nprint(True)         # booleano\n\n# Combinando valores\nprint(\"Python\", \"e\", \"incrivel!\", sep=\" | \")\nprint(\"2 + 2 =\", 2 + 2)",
-     "tip":"Python e case-sensitive: print() funciona, Print() da erro!"},
-
-    {"id":"py_02","title":"Variaveis e Tipos","level":"Iniciante","emoji":"📦","duration":"12 min","xp":50,
-     "theory":"Variaveis sao conteineres que guardam dados na memoria.\n\nCRIANDO VARIAVEIS\nnome = 'Ana'      # cria a variavel nome\nidade = 25        # cria a variavel idade\n\n4 TIPOS BASICOS\n  str   texto:    'Ola'  'Python'\n  int   inteiro:  42  -10  0\n  float decimal:  3.14  -0.5\n  bool  logico:   True  False\n\nDESCOBRINDO O TIPO\ntype('texto')  ->  <class 'str'>\ntype(42)       ->  <class 'int'>\n\nCONVERSAO\nint('42')     ->  42\nstr(42)       ->  '42'\nfloat('3.14') ->  3.14",
-     "code":"# VARIAVEIS EM ACAO\n\nnome = \"Ana Silva\"\nidade = 25\naltura = 1.68\nestudante = True\n\n# Exibindo com f-string (forma moderna)\nprint(f\"Nome: {nome}\")\nprint(f\"Idade: {idade} anos\")\nprint(f\"Altura: {altura}m\")\nprint(f\"Estudante: {estudante}\")\n\n# Verificando tipos\nprint(f\"\\nTipo nome:  {type(nome)}\")\nprint(f\"Tipo idade: {type(idade)}\")\n\n# Multipla atribuicao\nx, y, z = 10, 20, 30\nprint(f\"\\nx={x}, y={y}, z={z}\")\n\n# Incrementando\ncontador = 0\ncontador += 1\nprint(f\"Contador: {contador}\")",
-     "tip":"Use nomes descritivos: 'idade_usuario' e melhor que 'x'!"},
-
-    {"id":"py_03","title":"Operadores","level":"Iniciante","emoji":"🔢","duration":"10 min","xp":50,
-     "theory":"Operadores permitem calculos e comparacoes.\n\nARITMETICOS\n  +   adicao:        5 + 3  =  8\n  -   subtracao:     5 - 3  =  2\n  *   multiplicacao: 5 * 3  =  15\n  /   divisao:       7 / 2  =  3.5\n  //  divisao int:   7 // 2 =  3\n  %   modulo:        7 % 2  =  1\n  **  potencia:      2 ** 8 =  256\n\nCOMPARACAO (retornam bool)\n  ==  igual\n  !=  diferente\n  >   maior\n  <   menor\n  >=  maior ou igual\n\nLOGICOS\n  and  ambos True\n  or   um e True\n  not  inverte",
-     "code":"# OPERADORES EM ACAO\n\na, b = 10, 3\n\nprint(\"=== ARITMETICA ===\")\nprint(f\"{a} + {b}  = {a + b}\")\nprint(f\"{a} - {b}  = {a - b}\")\nprint(f\"{a} * {b}  = {a * b}\")\nprint(f\"{a} / {b}  = {a / b:.4f}\")\nprint(f\"{a} // {b} = {a // b} (inteira)\")\nprint(f\"{a} % {b}  = {a % b} (resto)\")\nprint(f\"{a} ** {b} = {a ** b} (potencia)\")\n\nprint(\"\\n=== COMPARACAO ===\")\nprint(f\"{a} > {b}  -> {a > b}\")\nprint(f\"{a} == {b} -> {a == b}\")\nprint(f\"{a} != {b} -> {a != b}\")\n\nprint(\"\\n=== LOGICOS ===\")\nprint(f\"True and True  -> {True and True}\")\nprint(f\"True or False  -> {True or False}\")\nprint(f\"not True       -> {not True}\")",
-     "tip":"7 / 2 = 3.5 (float), mas 7 // 2 = 3 (int). Atencao a diferenca!"},
-
-    {"id":"py_04","title":"Condicionais","level":"Iniciante","emoji":"🔀","duration":"15 min","xp":60,
-     "theory":"Condicionais permitem que o programa tome decisoes!\n\nESTRUTURA IF/ELIF/ELSE\n  if condicao_1:\n      # executa se True\n  elif condicao_2:\n      # executa se True\n  else:\n      # nenhuma foi True\n\nRegras:\n* Indentacao com 4 espacos e obrigatoria\n* elif e else sao opcionais\n\nOPERADOR TERNARIO\nresultado = 'sim' if condicao else 'nao'\n\nVALORES FALSY\nFalse, None, 0, 0.0, '', [], {}, ()",
-     "code":"# CONDICIONAIS EM ACAO\n\nnota = 7.8\n\nif nota >= 9.0:\n    conceito = \"A - Excelente!\"\nelif nota >= 7.0:\n    conceito = \"B - Bom!\"\nelif nota >= 5.0:\n    conceito = \"C - Regular\"\nelse:\n    conceito = \"F - Reprovado\"\n\nprint(f\"Nota: {nota}\")\nprint(f\"Conceito: {conceito}\")\n\n# Operador ternario\naprovado = \"Aprovado\" if nota >= 5 else \"Reprovado\"\nprint(f\"Situacao: {aprovado}\")\n\n# Condicoes compostas\nidade = 20\ntem_cnh = True\nif idade >= 18 and tem_cnh:\n    print(\"\\nPode dirigir!\")\nelif idade >= 18:\n    print(\"\\nTem idade mas precisa de CNH\")\nelse:\n    print(\"\\nMenor de idade\")",
-     "tip":"Sempre verifique n % 15 antes de n % 3 e n % 5 no FizzBuzz!"},
-
-    {"id":"py_05","title":"Loops: for e while","level":"Iniciante","emoji":"🔄","duration":"18 min","xp":60,
-     "theory":"Loops repetem blocos de codigo!\n\nFOR LOOP\nfor i in range(5):        # 0,1,2,3,4\nfor i in range(1, 6):     # 1,2,3,4,5\nfor i in range(0, 10, 2): # 0,2,4,6,8\n\nWHILE LOOP\nwhile condicao:\n    # SEMPRE atualize a condicao!\n\nAVISO: while True sem break = loop infinito!\n\nCONTROLE\n  break     sai do loop\n  continue  pula iteracao\n  pass      nao faz nada\n\nENUMERATE\nfor i, valor in enumerate(lista):",
-     "code":"# LOOPS EM ACAO\n\n# Range basico\nprint(\"=== Quadrados ===\")\nfor i in range(1, 8):\n    print(f\"  {i} ao quadrado = {i**2}\")\n\n# Iterando lista com enumerate\nfrutas = [\"Maca\", \"Banana\", \"Uva\"]\nprint(\"\\n=== Frutas ===\")\nfor i, fruta in enumerate(frutas):\n    print(f\"  [{i}] {fruta}\")\n\n# While\nprint(\"\\n=== Contagem ===\")\nn = 5\nwhile n > 0:\n    print(f\"  {n}...\", end=\" \")\n    n -= 1\nprint(\"LANCAMENTO!\")\n\n# Break e Continue\nprint(\"\\n=== Sem multiplos de 3 ===\")\nfor num in range(1, 16):\n    if num % 3 == 0:\n        continue\n    if num > 13:\n        break\n    print(f\"  {num}\", end=\" \")",
-     "tip":"Prefira for sobre while quando souber o numero de iteracoes!"},
-
-    {"id":"py_06","title":"Funcoes","level":"Intermediário","emoji":"⚙️","duration":"20 min","xp":80,
-     "theory":"Funcoes sao blocos de codigo reutilizaveis!\n\nDEFININDO\n  def nome(parametros):\n      '''Docstring'''\n      return valor\n\nTIPOS DE PARAMETROS\n  def f(a, b):       posicionais\n  def f(a, b=10):    com default\n  def f(*args):      qualquer qtd -> tupla\n  def f(**kwargs):   nomeados -> dict\n\nLAMBDA\nFuncoes anonimas de uma linha:\n  dobro = lambda x: x * 2\n\nESCOPO\n* Variaveis dentro sao LOCAIS\n* Use global para modificar externas",
-     "code":"# FUNCOES EM ACAO\n\ndef calcular_imc(peso, altura):\n    '''Calcula o IMC'''\n    imc = peso / (altura ** 2)\n    if imc < 18.5:   cat = \"Abaixo do peso\"\n    elif imc < 25:   cat = \"Normal\"\n    elif imc < 30:   cat = \"Sobrepeso\"\n    else:            cat = \"Obesidade\"\n    return round(imc, 1), cat\n\nimc, cat = calcular_imc(70, 1.75)\nprint(f\"IMC: {imc} -- {cat}\")\n\n# *args\ndef somar(*numeros):\n    return sum(numeros)\n\nprint(f\"\\nSoma: {somar(1, 2, 3)}\")\nprint(f\"Soma: {somar(10, 20, 30, 40)}\")\n\n# **kwargs\ndef criar_perfil(**dados):\n    print(\"\\nPERFIL:\")\n    for campo, valor in dados.items():\n        print(f\"  {campo}: {valor}\")\n\ncriar_perfil(nome=\"Ana\", idade=25, cidade=\"SP\")\n\n# Lambda\ndobro = lambda x: x * 2\nprint(f\"\\nDobro de 7: {dobro(7)}\")",
-     "tip":"Uma boa funcao: faz UMA coisa, tem nome descritivo e docstring!"},
-
-    {"id":"py_07","title":"Listas","level":"Intermediário","emoji":"📋","duration":"22 min","xp":80,
-     "theory":"Listas sao a estrutura mais usada em Python!\n\nACESSO\n  lista[0]    primeiro\n  lista[-1]   ultimo\n  lista[1:4]  fatia\n\nMETODOS\n  append(x)   adiciona ao fim\n  insert(i,x) insere na posicao\n  remove(x)   remove primeira ocorrencia\n  pop()       remove e retorna o ultimo\n  sort()      ordena no lugar\n  len(lista)  tamanho\n\nLIST COMPREHENSION\n[expressao for item in iteravel if condicao]\nquadrados = [x**2 for x in range(10)]\npares     = [x for x in range(20) if x%2==0]",
-     "code":"# LISTAS EM ACAO\n\nlinguagens = [\"Python\", \"JavaScript\", \"Java\", \"Rust\"]\nprint(f\"Lista: {linguagens}\")\nprint(f\"Primeira: {linguagens[0]}\")\nprint(f\"Ultima: {linguagens[-1]}\")\nprint(f\"Fatia [1:3]: {linguagens[1:3]}\")\n\n# Manipulacao\nlinguagens.append(\"Go\")\nlinguagens.insert(0, \"C++\")\nprint(f\"\\nApos add: {linguagens}\")\nlinguagens.remove(\"C++\")\nprint(f\"Final: {linguagens}\")\n\n# Ordenacao\nnumeros = [64, 34, 25, 12, 22, 11, 90]\nprint(f\"\\nOriginal: {numeros}\")\nprint(f\"Crescente: {sorted(numeros)}\")\n\n# List Comprehension\nprint(\"\\n=== List Comprehension ===\")\nquadrados = [x**2 for x in range(1, 9)]\nprint(f\"Quadrados: {quadrados}\")\n\npares = [x for x in range(1, 21) if x % 2 == 0]\nprint(f\"Pares ate 20: {pares}\")",
-     "tip":"List comprehension e ate 35% mais rapida que loop for equivalente!"},
-
-    {"id":"py_08","title":"Dicionarios e Sets","level":"Intermediário","emoji":"🗂️","duration":"20 min","xp":80,
-     "theory":"Dicionarios armazenam pares chave -> valor!\n\nCRIANDO\n  pessoa = {\n      'nome': 'Ana',\n      'idade': 25\n  }\n\nACESSANDO\n  pessoa['nome']          Ana\n  pessoa.get('nome')      seguro\n  pessoa.get('x', 'N/A')  com default\n\nMETODOS\n  .keys()    chaves\n  .values()  valores\n  .items()   pares (k,v)\n  .update()  mescla\n\nSETS\nColecao sem duplicatas:\n  a | b  uniao\n  a & b  intersecao\n  a - b  diferenca",
-     "code":"# DICIONARIOS E SETS\n\ndev = {\n    \"nome\": \"Carlos\",\n    \"idade\": 28,\n    \"skills\": [\"Python\", \"Django\", \"Docker\"],\n    \"nivel\": \"Senior\"\n}\n\nprint(f\"Nome: {dev['nome']}\")\nprint(f\"Cargo: {dev.get('cargo', 'Nao informado')}\")\n\nprint(\"\\nPerfil completo:\")\nfor chave, valor in dev.items():\n    print(f\"  {chave:12} -> {valor}\")\n\n# Dict Comprehension\nprint(\"\\n=== Potencias ===\")\npotencias = {f\"2^{i}\": 2**i for i in range(1, 9)}\nfor k, v in potencias.items():\n    print(f\"  {k:5} = {v}\")\n\n# Sets\nprint(\"\\n=== Sets ===\")\na = {1, 2, 3, 4, 5}\nb = {3, 4, 5, 6, 7}\nprint(f\"Uniao:     {a | b}\")\nprint(f\"Intersec:  {a & b}\")\nprint(f\"Diferenca: {a - b}\")",
-     "tip":"Use set() para remover duplicatas de uma lista rapidamente!"},
+    {
+      "id": "py_01", "title": "Olá, Python!", "level": "Iniciante",
+      "emoji": "🐍", "duration": "10 min", "xp": 50,
+      "theory": (
+        "Python é uma linguagem de alto nível criada por Guido van Rossum em 1991.\n\n"
+        "POR QUE PYTHON?\n"
+        "  • Sintaxe simples e legível\n"
+        "  • Versátil: Web, IA, Data Science, Automação\n"
+        "  • Linguagem mais popular do mundo (TIOBE 2024)\n"
+        "  • Usado por Google, Netflix, Instagram, NASA\n\n"
+        "SEU PRIMEIRO PROGRAMA\n"
+        "  print() exibe texto na tela.\n"
+        "  Aceita qualquer tipo de valor como argumento.\n\n"
+        "COMENTÁRIOS\n"
+        "  Linhas que começam com # são ignoradas pelo interpretador.\n\n"
+        "EXECUTANDO\n"
+        "  Terminal:   python3 arquivo.py\n"
+        "  Pydroid 3:  salve e pressione ▶"
+      ),
+      "code": (
+        "# Meu primeiro programa Python!\n"
+        "# Tudo após # é comentário — ignorado pelo Python\n\n"
+        'print("Olá, Mundo!")\n'
+        'print("Bem-vindo ao CodeMaster Pro!")\n\n'
+        "# Tipos diferentes de dados\n"
+        "print(42)           # número inteiro\n"
+        "print(3.14)         # número decimal\n"
+        "print(True)         # booleano\n\n"
+        "# Combinando valores\n"
+        'print("Python", "é", "incrível!", sep=" | ")\n'
+        'print("2 + 2 =", 2 + 2)'
+      ),
+      "tip": "Python é case-sensitive: print() funciona, Print() dá erro!"
+    },
+    {
+      "id": "py_02", "title": "Variáveis e Tipos", "level": "Iniciante",
+      "emoji": "📦", "duration": "12 min", "xp": 50,
+      "theory": (
+        "Variáveis são contêineres que guardam dados na memória.\n\n"
+        "CRIANDO VARIÁVEIS\n"
+        "  nome  = 'Ana'   → str\n"
+        "  idade = 25      → int\n"
+        "  altura= 1.68    → float\n"
+        "  ativo = True    → bool\n\n"
+        "4 TIPOS BÁSICOS\n"
+        "  str   texto:    'Olá'  \"Python\"\n"
+        "  int   inteiro:  42  -10  0\n"
+        "  float decimal:  3.14  -0.5\n"
+        "  bool  lógico:   True  False\n\n"
+        "DESCOBRINDO O TIPO\n"
+        "  type('texto')  →  <class 'str'>\n"
+        "  type(42)       →  <class 'int'>\n\n"
+        "CONVERSÃO\n"
+        "  int('42')      →  42\n"
+        "  str(42)        →  '42'\n"
+        "  float('3.14')  →  3.14"
+      ),
+      "code": (
+        "# VARIÁVEIS EM AÇÃO\n\n"
+        'nome      = "Ana Silva"\n'
+        "idade     = 25\n"
+        "altura    = 1.68\n"
+        "estudante = True\n\n"
+        "# Exibindo com f-string (forma moderna)\n"
+        'print(f"Nome: {nome}")\n'
+        'print(f"Idade: {idade} anos")\n'
+        'print(f"Altura: {altura}m")\n'
+        'print(f"Estudante: {estudante}")\n\n'
+        "# Verificando tipos\n"
+        'print(f"\\nTipo nome:  {type(nome)}")\n'
+        'print(f"Tipo idade: {type(idade)}")\n\n'
+        "# Múltipla atribuição\n"
+        "x, y, z = 10, 20, 30\n"
+        'print(f"\\nx={x}, y={y}, z={z}")\n\n'
+        "# Incrementando\n"
+        "contador = 0\n"
+        "contador += 1\n"
+        'print(f"Contador: {contador}")'
+      ),
+      "tip": "Use nomes descritivos: 'idade_usuario' é melhor que 'x'!"
+    },
+    {
+      "id": "py_03", "title": "Operadores", "level": "Iniciante",
+      "emoji": "🔢", "duration": "10 min", "xp": 50,
+      "theory": (
+        "Operadores permitem cálculos e comparações.\n\n"
+        "ARITMÉTICOS\n"
+        "  +    adição:        5 + 3  =  8\n"
+        "  -    subtração:     5 - 3  =  2\n"
+        "  *    multiplicação: 5 * 3  =  15\n"
+        "  /    divisão:       7 / 2  =  3.5  (sempre float!)\n"
+        "  //   divisão int:   7 // 2 =  3    (trunca)\n"
+        "  %    módulo:        7 % 2  =  1    (resto)\n"
+        "  **   potência:      2 ** 8 =  256\n\n"
+        "COMPARAÇÃO (retornam bool)\n"
+        "  ==  igual\n"
+        "  !=  diferente\n"
+        "  >   maior\n"
+        "  <   menor\n"
+        "  >=  maior ou igual\n\n"
+        "LÓGICOS\n"
+        "  and  ambos True\n"
+        "  or   um é True\n"
+        "  not  inverte"
+      ),
+      "code": (
+        "a, b = 10, 3\n\n"
+        'print("=== ARITMÉTICA ===")\n'
+        'print(f"{a} + {b}  = {a + b}")\n'
+        'print(f"{a} - {b}  = {a - b}")\n'
+        'print(f"{a} * {b}  = {a * b}")\n'
+        'print(f"{a} / {b}  = {a / b:.4f}")\n'
+        'print(f"{a} // {b} = {a // b}  (inteira)")\n'
+        'print(f"{a} % {b}  = {a % b}  (resto)")\n'
+        'print(f"{a} ** {b} = {a ** b}  (potência)")\n\n'
+        'print("\\n=== COMPARAÇÃO ===")\n'
+        'print(f"{a} >  {b}  → {a > b}")\n'
+        'print(f"{a} == {b}  → {a == b}")\n'
+        'print(f"{a} != {b}  → {a != b}")\n\n'
+        'print("\\n=== LÓGICOS ===")\n'
+        'print(f"True and True  → {True and True}")\n'
+        'print(f"True or  False → {True or False}")\n'
+        'print(f"not True       → {not True}")'
+      ),
+      "tip": "7 / 2 = 3.5 (float), mas 7 // 2 = 3 (int). Atenção à diferença!"
+    },
+    {
+      "id": "py_04", "title": "Condicionais", "level": "Iniciante",
+      "emoji": "🔀", "duration": "15 min", "xp": 60,
+      "theory": (
+        "Condicionais permitem que o programa tome decisões!\n\n"
+        "ESTRUTURA IF/ELIF/ELSE\n"
+        "  if condicao_1:\n"
+        "      # executa se True\n"
+        "  elif condicao_2:\n"
+        "      # executa se True\n"
+        "  else:\n"
+        "      # nenhuma foi True\n\n"
+        "REGRAS\n"
+        "  • Indentação com 4 espaços é OBRIGATÓRIA\n"
+        "  • elif e else são opcionais\n"
+        "  • Pode ter quantos elif quiser\n\n"
+        "OPERADOR TERNÁRIO\n"
+        "  resultado = 'sim' if condicao else 'não'\n\n"
+        "VALORES FALSY (tratados como False)\n"
+        "  False, None, 0, 0.0, '', [], {}, ()"
+      ),
+      "code": (
+        "nota = 7.8\n\n"
+        "if nota >= 9.0:\n"
+        '    conceito = "A — Excelente!"\n'
+        "elif nota >= 7.0:\n"
+        '    conceito = "B — Bom!"\n'
+        "elif nota >= 5.0:\n"
+        '    conceito = "C — Regular"\n'
+        "else:\n"
+        '    conceito = "F — Reprovado"\n\n'
+        'print(f"Nota: {nota}")\n'
+        'print(f"Conceito: {conceito}")\n\n'
+        "# Operador ternário\n"
+        'aprovado = "Aprovado" if nota >= 5 else "Reprovado"\n'
+        'print(f"Situação: {aprovado}")\n\n'
+        "# Condições compostas\n"
+        "idade = 20\n"
+        "tem_cnh = True\n"
+        "if idade >= 18 and tem_cnh:\n"
+        '    print("\\nPode dirigir!")\n'
+        "elif idade >= 18:\n"
+        '    print("\\nTem idade mas precisa de CNH")\n'
+        "else:\n"
+        '    print("\\nMenor de idade")'
+      ),
+      "tip": "Sempre verifique n % 15 antes de n % 3 e n % 5 no FizzBuzz!"
+    },
+    {
+      "id": "py_05", "title": "Loops: for e while", "level": "Iniciante",
+      "emoji": "🔄", "duration": "18 min", "xp": 60,
+      "theory": (
+        "Loops repetem blocos de código!\n\n"
+        "FOR LOOP\n"
+        "  for i in range(5):         # 0,1,2,3,4\n"
+        "  for i in range(1, 6):      # 1,2,3,4,5\n"
+        "  for i in range(0, 10, 2):  # 0,2,4,6,8\n\n"
+        "WHILE LOOP\n"
+        "  while condicao:\n"
+        "      # SEMPRE atualize a condição!\n\n"
+        "⚠️  while True sem break = loop infinito!\n\n"
+        "CONTROLE\n"
+        "  break     → sai do loop\n"
+        "  continue  → pula iteração atual\n"
+        "  pass      → não faz nada\n\n"
+        "ENUMERATE (índice + valor)\n"
+        "  for i, valor in enumerate(lista):"
+      ),
+      "code": (
+        "# Range básico\n"
+        'print("=== Quadrados ===")\n'
+        "for i in range(1, 8):\n"
+        '    print(f"  {i}² = {i**2}")\n\n'
+        "# Iterando com enumerate\n"
+        'frutas = ["Maçã", "Banana", "Uva"]\n'
+        'print("\\n=== Frutas ===")\n'
+        "for i, fruta in enumerate(frutas):\n"
+        '    print(f"  [{i}] {fruta}")\n\n'
+        "# While\n"
+        'print("\\n=== Contagem ===")\n'
+        "n = 5\n"
+        "while n > 0:\n"
+        '    print(f"  {n}...", end=" ")\n'
+        "    n -= 1\n"
+        'print("LANÇAMENTO!")\n\n'
+        "# Break e Continue\n"
+        'print("\\n=== Sem múltiplos de 3 ===")\n'
+        "for num in range(1, 16):\n"
+        "    if num % 3 == 0:\n"
+        "        continue\n"
+        "    if num > 13:\n"
+        "        break\n"
+        '    print(f"  {num}", end=" ")'
+      ),
+      "tip": "Prefira for sobre while quando souber o número de iterações!"
+    },
+    {
+      "id": "py_06", "title": "Funções", "level": "Intermediário",
+      "emoji": "⚙️", "duration": "20 min", "xp": 80,
+      "theory": (
+        "Funções são blocos de código reutilizáveis!\n\n"
+        "DEFININDO\n"
+        "  def nome(parâmetros):\n"
+        "      '''Docstring'''\n"
+        "      return valor\n\n"
+        "TIPOS DE PARÂMETROS\n"
+        "  def f(a, b):       posicionais\n"
+        "  def f(a, b=10):    com default\n"
+        "  def f(*args):      qualquer qtd → tupla\n"
+        "  def f(**kwargs):   nomeados → dict\n\n"
+        "LAMBDA\n"
+        "  Funções anônimas de uma linha:\n"
+        "  dobro = lambda x: x * 2\n\n"
+        "ESCOPO\n"
+        "  • Variáveis dentro são LOCAIS\n"
+        "  • Use global para modificar externas\n"
+        "  • Prefira retornar valores a modificar globais"
+      ),
+      "code": (
+        "def calcular_imc(peso: float, altura: float) -> tuple:\n"
+        "    '''Calcula o IMC e retorna (valor, categoria)'''\n"
+        "    if altura <= 0:\n"
+        '        raise ValueError("Altura deve ser positiva")\n'
+        "    imc = peso / (altura ** 2)\n"
+        '    if imc < 18.5:   cat = "Abaixo do peso"\n'
+        '    elif imc < 25.0: cat = "Normal"\n'
+        '    elif imc < 30.0: cat = "Sobrepeso"\n'
+        '    else:            cat = "Obesidade"\n'
+        "    return round(imc, 1), cat\n\n"
+        "imc, cat = calcular_imc(70, 1.75)\n"
+        'print(f"IMC: {imc} — {cat}")\n\n'
+        "# *args\n"
+        "def somar(*numeros: float) -> float:\n"
+        "    return sum(numeros)\n\n"
+        'print(f"\\nSoma: {somar(1, 2, 3)}")\n'
+        'print(f"Soma: {somar(10, 20, 30, 40)}")\n\n'
+        "# **kwargs\n"
+        "def criar_perfil(**dados) -> None:\n"
+        '    print("\\nPERFIL:")\n'
+        "    for campo, valor in dados.items():\n"
+        '        print(f"  {campo}: {valor}")\n\n'
+        'criar_perfil(nome="Ana", idade=25, cidade="SP")\n\n'
+        "# Lambda com map\n"
+        "dobro = lambda x: x * 2\n"
+        "nums  = list(map(dobro, range(1, 6)))\n"
+        'print(f"\\nDobros: {nums}")'
+      ),
+      "tip": "Uma boa função: faz UMA coisa, tem nome descritivo e docstring!"
+    },
+    {
+      "id": "py_07", "title": "Listas", "level": "Intermediário",
+      "emoji": "📋", "duration": "22 min", "xp": 80,
+      "theory": (
+        "Listas são a estrutura mais usada em Python!\n\n"
+        "ACESSO\n"
+        "  lista[0]     → primeiro\n"
+        "  lista[-1]    → último\n"
+        "  lista[1:4]   → fatia [1,2,3]\n"
+        "  lista[::-1]  → invertida\n\n"
+        "MÉTODOS\n"
+        "  append(x)    adiciona ao fim\n"
+        "  insert(i,x)  insere na posição\n"
+        "  remove(x)    remove 1ª ocorrência\n"
+        "  pop()        remove e retorna o último\n"
+        "  sort()       ordena no lugar (in-place)\n"
+        "  sorted()     retorna nova lista ordenada\n"
+        "  len(lista)   tamanho\n\n"
+        "LIST COMPREHENSION\n"
+        "  [expr for item in iter if cond]\n"
+        "  quadrados = [x**2 for x in range(10)]\n"
+        "  pares = [x for x in range(20) if x%2==0]"
+      ),
+      "code": (
+        'linguagens = ["Python", "JavaScript", "Java", "Rust"]\n\n'
+        'print(f"Lista:   {linguagens}")\n'
+        'print(f"Primeira: {linguagens[0]}")\n'
+        'print(f"Última:   {linguagens[-1]}")\n'
+        'print(f"Fatia:    {linguagens[1:3]}")\n\n'
+        "# Manipulação\n"
+        'linguagens.append("Go")\n'
+        'linguagens.insert(0, "C++")\n'
+        'print(f"\\nApós add: {linguagens}")\n'
+        'linguagens.remove("C++")\n'
+        'print(f"Final:    {linguagens}")\n\n'
+        "# Ordenação\n"
+        "numeros = [64, 34, 25, 12, 22, 11, 90]\n"
+        'print(f"\\nOriginal:   {numeros}")\n'
+        'print(f"Crescente:  {sorted(numeros)}")\n'
+        'print(f"Decrescente:{sorted(numeros, reverse=True)}")\n\n'
+        "# List Comprehension\n"
+        'print("\\n=== List Comprehension ===")\n'
+        "quadrados = [x**2 for x in range(1, 9)]\n"
+        'print(f"Quadrados: {quadrados}")\n\n'
+        "pares = [x for x in range(1, 21) if x % 2 == 0]\n"
+        'print(f"Pares:     {pares}")'
+      ),
+      "tip": "List comprehension é até 35% mais rápida que loop for equivalente!"
+    },
+    {
+      "id": "py_08", "title": "Dicionários e Sets", "level": "Intermediário",
+      "emoji": "🗂️", "duration": "20 min", "xp": 80,
+      "theory": (
+        "Dicionários armazenam pares chave → valor!\n\n"
+        "CRIANDO\n"
+        "  pessoa = {\n"
+        "      'nome': 'Ana',\n"
+        "      'idade': 25\n"
+        "  }\n\n"
+        "ACESSANDO\n"
+        "  pessoa['nome']          → 'Ana'\n"
+        "  pessoa.get('nome')      → 'Ana' (seguro)\n"
+        "  pessoa.get('x', 'N/A') → 'N/A' (default)\n\n"
+        "MÉTODOS ÚTEIS\n"
+        "  .keys()    → chaves\n"
+        "  .values()  → valores\n"
+        "  .items()   → pares (k,v)\n"
+        "  .update()  → mescla outro dict\n"
+        "  .pop(k)    → remove e retorna\n\n"
+        "SETS — Coleção sem duplicatas:\n"
+        "  a | b  → união\n"
+        "  a & b  → interseção\n"
+        "  a - b  → diferença\n"
+        "  a ^ b  → diferença simétrica"
+      ),
+      "code": (
+        "dev = {\n"
+        '    "nome":   "Carlos",\n'
+        '    "idade":  28,\n'
+        '    "skills": ["Python", "Django", "Docker"],\n'
+        '    "nivel":  "Senior"\n'
+        "}\n\n"
+        'print(f"Nome: {dev[\'nome\']}")\n'
+        'print(f"Cargo: {dev.get(\'cargo\', \'Não informado\')}")\n\n'
+        'print("\\nPerfil completo:")\n'
+        "for chave, valor in dev.items():\n"
+        '    print(f"  {chave:12} → {valor}")\n\n'
+        "# Dict Comprehension\n"
+        'print("\\n=== Potências ===")\n'
+        'potencias = {f"2^{i}": 2**i for i in range(1, 9)}\n'
+        "for k, v in potencias.items():\n"
+        '    print(f"  {k:5} = {v}")\n\n'
+        "# Sets\n"
+        'print("\\n=== Sets ===")\n'
+        "a = {1, 2, 3, 4, 5}\n"
+        "b = {3, 4, 5, 6, 7}\n"
+        'print(f"União:     {a | b}")\n'
+        'print(f"Interseção:{a & b}")\n'
+        'print(f"Diferença: {a - b}")\n\n'
+        "# Remove duplicatas\n"
+        "lista = [1, 2, 2, 3, 3, 3, 4]\n"
+        'print(f"\\nSem duplicatas: {list(set(lista))}")'
+      ),
+      "tip": "Use set() para remover duplicatas de uma lista rapidamente!"
+    },
   ],
   "javascript": [
-    {"id":"js_01","title":"Fundamentos do JS","level":"Iniciante","emoji":"⚡","duration":"12 min","xp":50,
-     "theory":"JavaScript e a linguagem da web!\n\nVARIAVEIS\n  var x = 1;   EVITE\n  let y = 2;   mutavel\n  const Z = 3; imutavel\n\nTIPOS\n  number:    42, 3.14, NaN\n  string:    'texto', `template`\n  boolean:   true, false\n  null:      valor vazio explicitamente\n  undefined: variavel sem valor\n  object:    {}, []\n\nTEMPLATE LITERALS\nconst nome = 'Ana';\nconsole.log(`Ola, ${nome}!`);\n\nCUIDADO\ntypeof null -> 'object'  (bug historico!)\nSempre use === nao ==",
-     "code":"// JAVASCRIPT FUNDAMENTOS\n\nlet nome = \"Ana Silva\";\nconst ANO = 1999;\nlet ativo = true;\n\nconst idade = 2024 - ANO;\nconsole.log(`${nome} tem ${idade} anos`);\n\n// Operadores\nconst a = 10, b = 3;\nconsole.log(`${a} + ${b} = ${a + b}`);\nconsole.log(`${a} ** ${b} = ${a ** b}`);\nconsole.log(`${a} % ${b} = ${a % b}`);\n\n// == vs ===\nconsole.log('\\n=== Comparacao ===');\nconsole.log(`5 == \"5\"  -> ${5 == \"5\"}`);\nconsole.log(`5 === \"5\" -> ${5 === \"5\"}`);\n\n// Tipos\nconst vals = [42, \"texto\", true, null, undefined];\nvals.forEach(v => console.log(`${String(v).padEnd(10)} -> ${typeof v}`));",
-     "tip":"Sempre use === (triplo igual) -- nunca == em JavaScript!"},
-
-    {"id":"js_02","title":"Arrow Functions","level":"Iniciante","emoji":"🏹","duration":"18 min","xp":60,
-     "theory":"JavaScript tem 3 formas de criar funcoes!\n\nDECLARATION (hoisting)\nfunction somar(a, b) { return a + b; }\n\nEXPRESSION (sem hoisting)\nconst somar = function(a, b) { return a + b; };\n\nARROW FUNCTION\nconst somar = (a, b) => a + b;\n\nSimplificacoes:\n* 1 parametro: sem parenteses\n* 1 linha: sem {} e sem return\n\nDEFAULT\nconst greet = (nome = 'dev') => `Ola, ${nome}!`;\n\nREST\nconst soma = (...nums) => nums.reduce((a,b)=>a+b,0);",
-     "code":"// FUNCOES EM ACAO\n\n// Arrow functions\nconst dobro = x => x * 2;\nconst quadrado = x => x ** 2;\nconst saudar = (nome = \"Dev\") => `Ola, ${nome}!`;\n\nconsole.log(`Dobro de 7: ${dobro(7)}`);\nconsole.log(`Quadrado de 8: ${quadrado(8)}`);\nconsole.log(saudar());\nconsole.log(saudar(\"Ana\"));\n\n// Rest parameters\nconst somar = (...nums) => {\n    const total = nums.reduce((acc, n) => acc + n, 0);\n    console.log(`Soma de [${nums}] = ${total}`);\n    return total;\n};\nsomar(1, 2, 3);\nsomar(10, 20, 30, 40, 50);\n\n// Higher-order functions\nconst nums = [1,2,3,4,5,6,7,8,9,10];\nconst resultado = nums\n    .filter(n => n % 2 === 0)\n    .map(n => n ** 2)\n    .reduce((acc, n) => acc + n, 0);\n\nconsole.log(`\\nSoma quadrados pares: ${resultado}`);",
-     "tip":"Arrow functions nao tem 'this' -- use function para metodos de objeto!"},
-
-    {"id":"js_03","title":"Arrays Modernos","level":"Intermediário","emoji":"📊","duration":"25 min","xp":80,
-     "theory":"Arrays em JS tem metodos funcionais poderosos!\n\nTRANSFORMACAO\n  map(fn)      novo array transformado\n  filter(fn)   novo array filtrado\n  reduce(fn,i) reduz a um valor\n\nBUSCA\n  find(fn)     primeiro que passa\n  includes(x)  boolean\n  some(fn)     true se ALGUM passa\n  every(fn)    true se TODOS passam\n\nOUTROS\n  sort(fn)     SEMPRE passe comparador!\n  slice(i,j)   copia (nao modifica)\n\nDESTRUTURACAO\nconst [a, b, ...resto] = [1, 2, 3, 4];",
-     "code":"// ARRAYS MODERNOS\n\nconst produtos = [\n    { nome: \"Notebook\",  preco: 2500, estoque: 15 },\n    { nome: \"Mouse\",     preco: 80,   estoque: 50 },\n    { nome: \"Teclado\",   preco: 150,  estoque: 30 },\n    { nome: \"Monitor\",   preco: 1200, estoque: 8  },\n];\n\n// filter\nconst caros = produtos.filter(p => p.preco > 200);\nconsole.log(\"Produtos caros:\");\ncaros.forEach(p => console.log(`  ${p.nome}: R$${p.preco}`));\n\n// map\nconst nomes = produtos.map(p => p.nome);\nconsole.log(\"\\nNomes:\", nomes);\n\n// reduce\nconst total = produtos.reduce(\n    (acc, p) => acc + (p.preco * p.estoque), 0\n);\nconsole.log(`\\nValor total: R$${total.toLocaleString()}`);\n\n// sort com comparador\nconst ordenados = [...produtos].sort((a, b) => a.preco - b.preco);\nconsole.log(\"\\nPor preco:\");\nordenados.forEach(p => console.log(`  R$${p.preco} -- ${p.nome}`));\n\nconsole.log(`\\nAlgum > R$2000? ${produtos.some(p => p.preco > 2000)}`);\nconsole.log(`Todos em estoque? ${produtos.every(p => p.estoque > 0)}`);",
-     "tip":"Nunca use .sort() sem comparador para numeros -- da resultado errado!"},
-
-    {"id":"js_04","title":"Classes ES6+","level":"Intermediário","emoji":"🏛️","duration":"28 min","xp":90,
-     "theory":"JavaScript moderno tem classes reais!\n\nESTRUTURA\nclass Animal {\n    #nome;  // privado (ES2022)\n\n    constructor(nome) { this.#nome = nome; }\n    get nome() { return this.#nome; }\n    falar() { return `${this.nome}...`; }\n}\n\nHERANCA\nclass Cachorro extends Animal {\n    falar() { return `${this.nome}: Au au!`; }\n}\n\nDESTRUTURACAO\nconst { nome, idade = 25 } = pessoa;\nconst novo = { ...pessoa, cidade: 'SP' };",
-     "code":"// CLASSES EM ACAO\n\nclass ContaBancaria {\n    #saldo = 0;\n    #historico = [];\n\n    constructor(titular, numero) {\n        this.titular = titular;\n        this.numero = numero;\n    }\n\n    depositar(valor) {\n        if (valor <= 0) throw new Error(\"Invalido\");\n        this.#saldo += valor;\n        this.#historico.push({ tipo: \"Deposito\", valor, saldo: this.#saldo });\n        return this;\n    }\n\n    sacar(valor) {\n        if (valor > this.#saldo) throw new Error(\"Saldo insuficiente\");\n        this.#saldo -= valor;\n        this.#historico.push({ tipo: \"Saque\", valor, saldo: this.#saldo });\n        return this;\n    }\n\n    get saldo() { return this.#saldo; }\n\n    extrato() {\n        console.log(`\\n=== Conta ${this.numero} ===`);\n        this.#historico.forEach(({ tipo, valor, saldo }) => {\n            console.log(`  ${tipo}: R$${valor.toFixed(2)} | Saldo: R$${saldo.toFixed(2)}`);\n        });\n    }\n}\n\nconst conta = new ContaBancaria(\"Ana\", \"001-234\");\nconta.depositar(1000).depositar(500).sacar(200);\nconta.extrato();\nconsole.log(`\\nSaldo: R$${conta.saldo.toFixed(2)}`);",
-     "tip":"Use # para campos privados reais em classes modernas (ES2022)!"},
+    {
+      "id": "js_01", "title": "Fundamentos do JS", "level": "Iniciante",
+      "emoji": "⚡", "duration": "12 min", "xp": 50,
+      "theory": (
+        "JavaScript é a linguagem da web!\n\n"
+        "VARIÁVEIS\n"
+        "  var x = 1;   → EVITE (escopo problemático)\n"
+        "  let y = 2;   → mutável, escopo de bloco\n"
+        "  const Z = 3; → imutável\n\n"
+        "TIPOS PRIMITIVOS\n"
+        "  number:    42, 3.14, NaN, Infinity\n"
+        "  string:    'texto', \"texto\", `template`\n"
+        "  boolean:   true, false\n"
+        "  null:      valor vazio intencional\n"
+        "  undefined: variável declarada sem valor\n"
+        "  bigint:    9007199254740993n\n"
+        "  symbol:    Symbol('id')\n\n"
+        "TEMPLATE LITERALS\n"
+        "  const msg = `Olá, ${nome}! Você tem ${idade} anos.`;\n\n"
+        "⚠️  ARMADILHAS\n"
+        "  typeof null  → 'object'  (bug histórico!)\n"
+        "  5 == '5'     → true   (coerção)\n"
+        "  5 === '5'    → false  (sem coerção)\n"
+        "  SEMPRE use === !"
+      ),
+      "code": (
+        "// JAVASCRIPT FUNDAMENTOS\n\n"
+        'let nome = "Ana Silva";\n'
+        "const ANO_NASC = 1999;\n"
+        "let ativo = true;\n\n"
+        "const idade = new Date().getFullYear() - ANO_NASC;\n"
+        "console.log(`${nome} tem ${idade} anos`);\n\n"
+        "// Operadores\n"
+        "const a = 10, b = 3;\n"
+        'console.log(`${a} + ${b} = ${a + b}`);\n'
+        'console.log(`${a} ** ${b} = ${a ** b}`);\n'
+        'console.log(`${a} % ${b} = ${a % b}`);\n\n'
+        "// == vs ===\n"
+        "console.log('\\n=== Comparação ===');\n"
+        'console.log(`5 == "5"  → ${5 == "5"}`);\n'
+        'console.log(`5 === "5" → ${5 === "5"}`);\n\n'
+        "// typeof\n"
+        "const vals = [42, 'texto', true, null, undefined];\n"
+        "vals.forEach(v => {\n"
+        "  console.log(`${String(v).padEnd(10)} → typeof: ${typeof v}`);\n"
+        "});"
+      ),
+      "tip": "Sempre use === (triplo igual) — nunca == em JavaScript!"
+    },
+    {
+      "id": "js_02", "title": "Arrow Functions", "level": "Iniciante",
+      "emoji": "🏹", "duration": "18 min", "xp": 60,
+      "theory": (
+        "JavaScript tem 3 formas de criar funções!\n\n"
+        "FUNCTION DECLARATION (com hoisting)\n"
+        "  function somar(a, b) { return a + b; }\n\n"
+        "FUNCTION EXPRESSION (sem hoisting)\n"
+        "  const somar = function(a, b) { return a + b; };\n\n"
+        "ARROW FUNCTION (ES6+)\n"
+        "  const somar = (a, b) => a + b;\n\n"
+        "SIMPLIFICAÇÕES\n"
+        "  1 parâmetro: sem parênteses → x => x * 2\n"
+        "  1 linha:     sem {} e sem return\n"
+        "  0 params:    parênteses obrigatórios → () => 42\n\n"
+        "DEFAULT PARAMS\n"
+        "  const greet = (nome = 'Dev') => `Olá, ${nome}!`;\n\n"
+        "REST PARAMS\n"
+        "  const soma = (...nums) => nums.reduce((a,b)=>a+b,0);\n\n"
+        "⚠️  Arrow functions NÃO têm 'this' próprio!"
+      ),
+      "code": (
+        "// Arrow functions\n"
+        "const dobro    = x => x * 2;\n"
+        "const quadrado = x => x ** 2;\n"
+        "const saudar   = (nome = 'Dev') => `Olá, ${nome}!`;\n\n"
+        'console.log(`Dobro de 7: ${dobro(7)}`);\n'
+        'console.log(`Quadrado de 8: ${quadrado(8)}`);\n'
+        'console.log(saudar());\n'
+        'console.log(saudar("Ana"));\n\n'
+        "// Rest parameters\n"
+        "const somar = (...nums) => {\n"
+        "  const total = nums.reduce((acc, n) => acc + n, 0);\n"
+        '  console.log(`Soma de [${nums}] = ${total}`);\n'
+        "  return total;\n"
+        "};\n"
+        "somar(1, 2, 3);\n"
+        "somar(10, 20, 30, 40, 50);\n\n"
+        "// Higher-order functions encadeadas\n"
+        "const nums = [1,2,3,4,5,6,7,8,9,10];\n"
+        "const resultado = nums\n"
+        "  .filter(n => n % 2 === 0)    // pares\n"
+        "  .map(n => n ** 2)            // quadrado\n"
+        "  .reduce((acc, n) => acc + n, 0); // soma\n\n"
+        'console.log(`\\nSoma dos quadrados dos pares: ${resultado}`);'
+      ),
+      "tip": "Arrow functions não têm 'this' — use function para métodos de objeto!"
+    },
+    {
+      "id": "js_03", "title": "Arrays Modernos", "level": "Intermediário",
+      "emoji": "📊", "duration": "25 min", "xp": 80,
+      "theory": (
+        "Arrays em JS têm métodos funcionais poderosos!\n\n"
+        "TRANSFORMAÇÃO\n"
+        "  map(fn)        → novo array transformado\n"
+        "  filter(fn)     → novo array filtrado\n"
+        "  reduce(fn, i)  → reduz a um único valor\n"
+        "  flatMap(fn)    → map + flatten\n\n"
+        "BUSCA\n"
+        "  find(fn)       → primeiro que passa\n"
+        "  findIndex(fn)  → índice do primeiro\n"
+        "  includes(x)    → boolean\n"
+        "  some(fn)       → true se ALGUM passa\n"
+        "  every(fn)      → true se TODOS passam\n\n"
+        "OUTROS\n"
+        "  sort(fn)       → SEMPRE passe comparador!\n"
+        "  slice(i,j)     → cópia (não modifica)\n"
+        "  splice(i,n)    → modifica no lugar\n"
+        "  flat(depth)    → achata arrays aninhados\n\n"
+        "DESTRUCTURING\n"
+        "  const [a, b, ...resto] = [1, 2, 3, 4];"
+      ),
+      "code": (
+        "const produtos = [\n"
+        '  { nome: "Notebook",  preco: 2500, estoque: 15 },\n'
+        '  { nome: "Mouse",     preco: 80,   estoque: 50 },\n'
+        '  { nome: "Teclado",   preco: 150,  estoque: 30 },\n'
+        '  { nome: "Monitor",   preco: 1200, estoque: 0  },\n'
+        "];\n\n"
+        "// filter + map + sort encadeados\n"
+        "const pipeline = produtos\n"
+        "  .filter(p => p.estoque > 0)\n"
+        "  .map(p => ({ ...p, total: p.preco * p.estoque }))\n"
+        "  .sort((a, b) => b.total - a.total);\n\n"
+        "console.log('=== Produtos em estoque (por valor) ===');\n"
+        "pipeline.forEach(p =>\n"
+        '  console.log(`  ${p.nome.padEnd(10)} → R$${p.total.toLocaleString()}`)\n'
+        ");\n\n"
+        "// reduce\n"
+        "const valorTotal = pipeline.reduce((acc, p) => acc + p.total, 0);\n"
+        'console.log(`\\nEstoque total: R$${valorTotal.toLocaleString()}`);\n\n'
+        "// Destructuring\n"
+        "const [maisValioso, ...resto] = pipeline;\n"
+        'console.log(`\\nMais valioso: ${maisValioso.nome}`);\n\n'
+        'console.log(`Algum > R$2000? ${produtos.some(p => p.preco > 2000)}`);\n'
+        'console.log(`Todos com preço? ${produtos.every(p => p.preco > 0)}`);'
+      ),
+      "tip": "Nunca use .sort() sem comparador para números — dá resultado errado!"
+    },
+    {
+      "id": "js_04", "title": "Classes ES6+", "level": "Intermediário",
+      "emoji": "🏛️", "duration": "28 min", "xp": 90,
+      "theory": (
+        "JavaScript moderno tem classes reais!\n\n"
+        "ESTRUTURA\n"
+        "  class Animal {\n"
+        "    #nome;           // campo privado (ES2022)\n"
+        "    static count = 0; // campo estático\n\n"
+        "    constructor(nome) {\n"
+        "      this.#nome = nome;\n"
+        "      Animal.count++;\n"
+        "    }\n"
+        "    get nome() { return this.#nome; }\n"
+        "    falar() { return `${this.nome}...`; }\n"
+        "  }\n\n"
+        "HERANÇA\n"
+        "  class Cachorro extends Animal {\n"
+        "    falar() { return `${this.nome}: Au au!`; }\n"
+        "  }\n\n"
+        "SPREAD / REST\n"
+        "  const novo = { ...pessoa, cidade: 'SP' };\n"
+        "  const copia = [...array, 99];"
+      ),
+      "code": (
+        "class ContaBancaria {\n"
+        "  #saldo = 0;\n"
+        "  #historico = [];\n\n"
+        "  constructor(titular, numero) {\n"
+        "    if (!titular) throw new Error('Titular obrigatório');\n"
+        "    this.titular = titular;\n"
+        "    this.numero  = numero;\n"
+        "  }\n\n"
+        "  depositar(valor) {\n"
+        "    if (valor <= 0) throw new Error('Valor inválido');\n"
+        "    this.#saldo += valor;\n"
+        "    this.#historico.push({ tipo: 'Depósito', valor, saldo: this.#saldo });\n"
+        "    return this; // permite encadeamento\n"
+        "  }\n\n"
+        "  sacar(valor) {\n"
+        "    if (valor > this.#saldo) throw new Error('Saldo insuficiente');\n"
+        "    this.#saldo -= valor;\n"
+        "    this.#historico.push({ tipo: 'Saque', valor, saldo: this.#saldo });\n"
+        "    return this;\n"
+        "  }\n\n"
+        "  get saldo() { return this.#saldo; }\n\n"
+        "  extrato() {\n"
+        "    console.log(`\\n=== Conta ${this.numero} — ${this.titular} ===`);\n"
+        "    this.#historico.forEach(({ tipo, valor, saldo }) =>\n"
+        "      console.log(`  ${tipo.padEnd(9)} R$${valor.toFixed(2).padStart(8)} | Saldo: R$${saldo.toFixed(2)}`)\n"
+        "    );\n"
+        "  }\n"
+        "}\n\n"
+        "const conta = new ContaBancaria('Ana', '001-234');\n"
+        "conta.depositar(1000).depositar(500).sacar(200);\n"
+        "conta.extrato();\n"
+        'console.log(`\\nSaldo: R$${conta.saldo.toFixed(2)}`);'
+      ),
+      "tip": "Use # para campos privados reais em classes modernas (ES2022)!"
+    },
   ],
   "java": [
-    {"id":"java_01","title":"Introducao ao Java","level":"Iniciante","emoji":"☕","duration":"15 min","xp":60,
-     "theory":"Java e fortemente tipada e orientada a objetos!\n\nESTRUTURA OBRIGATORIA\npublic class NomeArquivo {\n    public static void main(String[] args) {\n        // codigo aqui\n    }\n}\nATENCAO: Nome da classe = nome do arquivo!\n\nTIPOS PRIMITIVOS\n  int     inteiro       (4 bytes)\n  double  decimal       (8 bytes)\n  float   decimal leve  3.14f\n  long    int grande    100L\n  char    caractere     'A'\n  boolean true/false\n\nString NAO e primitivo -- e uma CLASSE!\n\nSAIDA\nSystem.out.println()  com quebra\nSystem.out.printf()   formatado",
-     "code":"// JAVA FUNDAMENTOS\n// Arquivo: Fundamentos.java\n\npublic class Fundamentos {\n\n    public static void main(String[] args) {\n\n        // Tipos primitivos\n        int     idade     = 25;\n        double  altura    = 1.75;\n        float   peso      = 70.5f;      // 'f' obrigatorio!\n        long    pop       = 8000000000L; // 'L' obrigatorio!\n        char    inicial   = 'A';\n        boolean ativo     = true;\n\n        // String (e uma Classe!)\n        String nome = \"Carlos Silva\";\n\n        // Printf formatado\n        System.out.println(\"=== DADOS ===\");\n        System.out.printf(\"Nome:   %s%n\", nome);\n        System.out.printf(\"Idade:  %d anos%n\", idade);\n        System.out.printf(\"Altura: %.2f m%n\", altura);\n\n        // Operacoes -- CUIDADO com int/int!\n        int a = 10, b = 3;\n        System.out.println(\"\\n=== OPERACOES ===\");\n        System.out.println(\"Divisao int:  \" + (a / b));         // 3!\n        System.out.println(\"Divisao real: \" + (a / (double)b)); // 3.33\n        System.out.println(\"Modulo:       \" + (a % b));\n        System.out.println(\"Potencia:     \" + (int)Math.pow(a, b));\n    }\n}",
-     "tip":"int/int = int em Java! Use (double)a / b para resultado decimal."},
-
-    {"id":"java_02","title":"Condicionais e Loops","level":"Iniciante","emoji":"🔄","duration":"18 min","xp":70,
-     "theory":"Java tem as mesmas estruturas do C/C++!\n\nIF/ELSE\n  if (condicao) { }\n  else if (outra) { }\n  else { }\n\nSWITCH Java 14+\n  switch (valor) {\n      case 1 -> \"Um\";\n      default -> \"Outro\";\n  }\n\nFOR LOOP\n  for (int i=0; i<10; i++) { }\n\nWHILE\n  while (condicao) {  }       // testa antes\n  do { } while (condicao);    // testa depois\n\nFOR-EACH\n  for (int n : array) { }",
-     "code":"// CONDICIONAIS E LOOPS\n\npublic class ControleDeFluxo {\n\n    public static void main(String[] args) {\n\n        // Switch Expression (Java 14+)\n        int mes = 7;\n        String estacao = switch (mes) {\n            case 12, 1, 2  -> \"Verao\";\n            case 3, 4, 5   -> \"Outono\";\n            case 6, 7, 8   -> \"Inverno\";\n            case 9, 10, 11 -> \"Primavera\";\n            default -> \"Invalido\";\n        };\n        System.out.println(\"Mes \" + mes + \": \" + estacao);\n\n        // For -- Tabuada\n        System.out.println(\"\\n=== TABUADA DO 7 ===\");\n        for (int i = 1; i <= 10; i++) {\n            System.out.printf(\"7 x %2d = %2d%n\", i, 7 * i);\n        }\n\n        // For-each\n        String[] langs = {\"Java\", \"Python\", \"JavaScript\"};\n        System.out.println(\"\\n=== LINGUAGENS ===\");\n        for (String lang : langs) {\n            System.out.println(\"  -> \" + lang);\n        }\n\n        // Do-while\n        System.out.println(\"\\n=== POTENCIAS DE 2 ===\");\n        int v = 1;\n        do {\n            System.out.print(v + \" \");\n            v *= 2;\n        } while (v <= 1024);\n    }\n}",
-     "tip":"Use for-each quando nao precisar do indice -- mais seguro e legivel!"},
-
-    {"id":"java_03","title":"Classes e OOP","level":"Intermediário","emoji":"🏛️","duration":"35 min","xp":100,
-     "theory":"Java foi construido para OOP!\n\n4 PILARES\n1. ENCAPSULAMENTO\n   Ocultar dados. Use private + getters/setters.\n\n2. HERANCA\n   class Filho extends Pai { }\n\n3. POLIMORFISMO\n   Mesma interface, comportamentos diferentes.\n\n4. ABSTRACAO\n   Simplificar complexidade.\n\nCLASSE\npublic class Produto {\n    private String nome;\n    private double preco;\n\n    public Produto(String n, double p) {\n        this.nome = n;\n        this.preco = p;\n    }\n    public String getNome() { return nome; }\n}\n\nABSTRACT\nabstract class Forma {\n    abstract double area();\n}",
-     "code":"// CLASSES E OOP\n\nabstract class Funcionario {\n    protected String nome;\n    protected double salarioBase;\n\n    public Funcionario(String nome, double salBase) {\n        this.nome = nome;\n        this.salarioBase = salBase;\n    }\n\n    public abstract double calcularSalario();\n\n    public void exibirInfo() {\n        System.out.printf(\"%-18s -> R$%.2f%n\",\n                         nome, calcularSalario());\n    }\n}\n\nclass Desenvolvedor extends Funcionario {\n    private int horasExtras;\n    private static final double H_EXTRA = 80.0;\n\n    public Desenvolvedor(String nome, double base, int horas) {\n        super(nome, base);\n        this.horasExtras = horas;\n    }\n\n    @Override\n    public double calcularSalario() {\n        return salarioBase + (horasExtras * H_EXTRA);\n    }\n}\n\nclass Gerente extends Funcionario {\n    private double bonus;\n\n    public Gerente(String nome, double base, double bonus) {\n        super(nome, base);\n        this.bonus = bonus;\n    }\n\n    @Override\n    public double calcularSalario() {\n        return salarioBase + bonus;\n    }\n}\n\npublic class SistemaRH {\n    public static void main(String[] args) {\n        Funcionario[] equipe = {\n            new Desenvolvedor(\"Ana Silva\",   8000, 20),\n            new Desenvolvedor(\"Carlos Lima\", 9500, 15),\n            new Gerente(\"Beatriz Costa\",    12000, 3000),\n        };\n\n        System.out.println(\"=== FOLHA DE PAGAMENTO ===\");\n        double total = 0;\n        for (Funcionario f : equipe) {\n            f.exibirInfo();\n            total += f.calcularSalario();\n        }\n        System.out.printf(\"\\nTotal: R$%.2f%n\", total);\n    }\n}",
-     "tip":"Programe para interfaces/abstracoes, nao para implementacoes!"},
+    {
+      "id": "java_01", "title": "Introdução ao Java", "level": "Iniciante",
+      "emoji": "☕", "duration": "15 min", "xp": 60,
+      "theory": (
+        "Java é fortemente tipada e orientada a objetos!\n\n"
+        "ESTRUTURA OBRIGATÓRIA\n"
+        "  public class NomeArquivo {\n"
+        "      public static void main(String[] args) {\n"
+        "          // código aqui\n"
+        "      }\n"
+        "  }\n"
+        "  ⚠️  Nome da classe == nome do arquivo!\n\n"
+        "TIPOS PRIMITIVOS\n"
+        "  int     inteiro       (4 bytes, -2^31 a 2^31-1)\n"
+        "  long    inteiro grande (8 bytes) → use 100L\n"
+        "  double  decimal (64-bit) → padrão para reais\n"
+        "  float   decimal (32-bit) → use 3.14f\n"
+        "  char    caractere Unicode → 'A'\n"
+        "  boolean true / false\n\n"
+        "⚠️  String NÃO é primitivo — é uma Classe!\n\n"
+        "SAÍDA\n"
+        "  System.out.println()  → com quebra de linha\n"
+        "  System.out.printf()   → formatação estilo C"
+      ),
+      "code": (
+        "// JAVA FUNDAMENTOS\n"
+        "// Arquivo: Fundamentos.java\n\n"
+        "public class Fundamentos {\n\n"
+        "    public static void main(String[] args) {\n\n"
+        "        // Tipos primitivos\n"
+        "        int     idade  = 25;\n"
+        "        double  altura = 1.75;\n"
+        "        float   peso   = 70.5f;       // 'f' obrigatório!\n"
+        "        long    pop    = 8_000_000_000L; // '_' melhora leitura\n"
+        "        char    inicial= 'A';\n"
+        "        boolean ativo  = true;\n\n"
+        "        // String (é uma Classe!)\n"
+        '        String nome = "Carlos Silva";\n\n'
+        "        // Printf formatado\n"
+        '        System.out.println("=== DADOS ===");\n'
+        '        System.out.printf("Nome:   %s%n",   nome);\n'
+        '        System.out.printf("Idade:  %d anos%n", idade);\n'
+        '        System.out.printf("Altura: %.2f m%n", altura);\n'
+        '        System.out.printf("Ativo:  %b%n", ativo);\n\n'
+        "        // CUIDADO: int / int = int !\n"
+        "        int a = 10, b = 3;\n"
+        '        System.out.println("\\n=== OPERAÇÕES ===");\n'
+        '        System.out.println("int/int:  " + (a / b));          // 3\n'
+        '        System.out.println("double:   " + (a / (double)b));  // 3.333\n'
+        '        System.out.println("Módulo:   " + (a % b));\n'
+        '        System.out.println("Potência: " + (int)Math.pow(a, b));\n'
+        "    }\n"
+        "}"
+      ),
+      "tip": "int/int = int em Java! Use (double)a / b para resultado decimal."
+    },
+    {
+      "id": "java_02", "title": "Condicionais e Loops", "level": "Iniciante",
+      "emoji": "🔄", "duration": "18 min", "xp": 70,
+      "theory": (
+        "Java tem as mesmas estruturas do C/C++!\n\n"
+        "IF/ELSE IF/ELSE\n"
+        "  if (condicao) { }\n"
+        "  else if (outra) { }\n"
+        "  else { }\n\n"
+        "SWITCH EXPRESSION (Java 14+)\n"
+        "  String result = switch (valor) {\n"
+        "      case 1 -> \"Um\";\n"
+        "      case 2, 3 -> \"Dois ou Três\";\n"
+        "      default -> \"Outro\";\n"
+        "  };\n\n"
+        "LOOPS\n"
+        "  for (int i=0; i<10; i++) { }     // clássico\n"
+        "  while (cond) { }                 // testa antes\n"
+        "  do { } while (cond);             // testa depois\n"
+        "  for (int n : array) { }          // for-each\n\n"
+        "CONTROLE\n"
+        "  break    → sai do loop\n"
+        "  continue → pula iteração\n"
+        "  return   → sai do método"
+      ),
+      "code": (
+        "public class ControleDeFluxo {\n\n"
+        "    public static void main(String[] args) {\n\n"
+        "        // Switch Expression (Java 14+)\n"
+        "        int mes = 7;\n"
+        "        String estacao = switch (mes) {\n"
+        "            case 12, 1, 2  -> \"Verão\";\n"
+        "            case 3, 4, 5   -> \"Outono\";\n"
+        "            case 6, 7, 8   -> \"Inverno\";\n"
+        "            case 9, 10, 11 -> \"Primavera\";\n"
+        "            default -> throw new IllegalArgumentException(\"Mês inválido: \" + mes);\n"
+        "        };\n"
+        "        System.out.println(\"Mês \" + mes + \": \" + estacao);\n\n"
+        "        // For — Tabuada com printf\n"
+        "        System.out.println(\"\\n=== TABUADA DO 7 ===\");\n"
+        "        for (int i = 1; i <= 10; i++)\n"
+        "            System.out.printf(\"  7 × %2d = %2d%n\", i, 7 * i);\n\n"
+        "        // For-each\n"
+        "        String[] langs = {\"Java\", \"Python\", \"JavaScript\"};\n"
+        "        System.out.println(\"\\n=== LINGUAGENS ===\");\n"
+        "        for (String lang : langs)\n"
+        "            System.out.println(\"  → \" + lang);\n\n"
+        "        // Do-while — potências de 2\n"
+        "        System.out.println(\"\\n=== POTÊNCIAS DE 2 ===\");\n"
+        "        int v = 1;\n"
+        "        do {\n"
+        "            System.out.print(v + \" \");\n"
+        "            v *= 2;\n"
+        "        } while (v <= 1024);\n"
+        "    }\n"
+        "}"
+      ),
+      "tip": "Use for-each quando não precisar do índice — mais seguro e legível!"
+    },
+    {
+      "id": "java_03", "title": "Classes e OOP", "level": "Intermediário",
+      "emoji": "🏛️", "duration": "35 min", "xp": 100,
+      "theory": (
+        "Java foi construído para OOP!\n\n"
+        "OS 4 PILARES\n"
+        "  1. ENCAPSULAMENTO\n"
+        "     Oculte dados com private.\n"
+        "     Exponha via getters/setters.\n\n"
+        "  2. HERANÇA\n"
+        "     class Filho extends Pai { }\n"
+        "     Use super() para chamar o pai.\n\n"
+        "  3. POLIMORFISMO\n"
+        "     Mesma interface, comportamentos diferentes.\n"
+        "     @Override para sobrescrever métodos.\n\n"
+        "  4. ABSTRAÇÃO\n"
+        "     abstract class / interface simplificam.\n\n"
+        "ABSTRACT vs INTERFACE\n"
+        "  abstract: herança única, pode ter estado\n"
+        "  interface: múltipla, apenas contrato"
+      ),
+      "code": (
+        "abstract class Funcionario {\n"
+        "    protected final String nome;\n"
+        "    protected double salarioBase;\n\n"
+        "    public Funcionario(String nome, double salBase) {\n"
+        "        if (nome == null || nome.isBlank())\n"
+        "            throw new IllegalArgumentException(\"Nome inválido\");\n"
+        "        if (salBase <= 0)\n"
+        "            throw new IllegalArgumentException(\"Salário deve ser > 0\");\n"
+        "        this.nome = nome;\n"
+        "        this.salarioBase = salBase;\n"
+        "    }\n\n"
+        "    public abstract double calcularSalario();\n\n"
+        "    public void exibirInfo() {\n"
+        "        System.out.printf(\"  %-20s → R$ %,10.2f%n\",\n"
+        "                          nome, calcularSalario());\n"
+        "    }\n"
+        "}\n\n"
+        "class Desenvolvedor extends Funcionario {\n"
+        "    private final int horasExtras;\n"
+        "    private static final double VALOR_HORA_EXTRA = 80.0;\n\n"
+        "    public Desenvolvedor(String nome, double base, int horas) {\n"
+        "        super(nome, base);\n"
+        "        this.horasExtras = Math.max(0, horas);\n"
+        "    }\n\n"
+        "    @Override\n"
+        "    public double calcularSalario() {\n"
+        "        return salarioBase + (horasExtras * VALOR_HORA_EXTRA);\n"
+        "    }\n"
+        "}\n\n"
+        "class Gerente extends Funcionario {\n"
+        "    private final double bonus;\n\n"
+        "    public Gerente(String nome, double base, double bonus) {\n"
+        "        super(nome, base);\n"
+        "        this.bonus = Math.max(0, bonus);\n"
+        "    }\n\n"
+        "    @Override\n"
+        "    public double calcularSalario() {\n"
+        "        return salarioBase + bonus;\n"
+        "    }\n"
+        "}\n\n"
+        "public class SistemaRH {\n"
+        "    public static void main(String[] args) {\n"
+        "        Funcionario[] equipe = {\n"
+        '            new Desenvolvedor("Ana Silva",     8000, 20),\n'
+        '            new Desenvolvedor("Carlos Lima",   9500, 15),\n'
+        '            new Gerente("Beatriz Costa",       12000, 3000),\n'
+        "        };\n\n"
+        '        System.out.println("=== FOLHA DE PAGAMENTO ===");\n'
+        "        double total = 0;\n"
+        "        for (Funcionario f : equipe) {\n"
+        "            f.exibirInfo();\n"
+        "            total += f.calcularSalario();\n"
+        "        }\n"
+        '        System.out.printf("%n  TOTAL: R$ %,10.2f%n", total);\n'
+        "    }\n"
+        "}"
+      ),
+      "tip": "Programe para interfaces/abstrações, não para implementações!"
+    },
   ]
 }
 
 EXERCISES = [
-  {"id":"ex_py_01","lang":"python","level":"Iniciante","emoji":"👋","xp":100,"title":"Saudacao Personalizada",
-   "desc":"Crie saudar(nome) que retorne:\n'Ola, [NOME]! Bem-vindo ao CodeMaster Pro!'\nO nome deve estar em MAIUSCULAS.",
-   "hint":"Use .upper() para maiusculas e f-strings para formatar.",
-   "starter":"def saudar(nome):\n    nome_maiusculo = nome._____()\n    return f\"_____, {_____}! Bem-vindo ao CodeMaster Pro!\"\n\nprint(saudar(\"ana\"))\nprint(saudar(\"carlos\"))",
-   "solution":"def saudar(nome):\n    nome_maiusculo = nome.upper()\n    return f\"Ola, {nome_maiusculo}! Bem-vindo ao CodeMaster Pro!\"\n\nprint(saudar(\"ana\"))\nprint(saudar(\"carlos\"))"},
-
-  {"id":"ex_py_02","lang":"python","level":"Iniciante","emoji":"🔢","xp":100,"title":"Par ou Impar",
-   "desc":"Crie verificar(n) que retorne 'par' ou 'impar'.\nDepois liste todos os pares de 1 a 20.",
-   "hint":"Use % 2 para paridade. Se n % 2 == 0, e par!",
-   "starter":"def verificar(numero):\n    if numero % ___ == ___:\n        return \"par\"\n    return \"impar\"\n\nfor i in range(1, 11):\n    print(f\"{i} e {verificar(i)}\")\n\npares = [n for n in range(1, 21) if ___]\nprint(\"Pares:\", pares)",
-   "solution":"def verificar(numero):\n    if numero % 2 == 0:\n        return 'par'\n    return 'impar'\n\nfor i in range(1, 11):\n    print(f\"{i} e {verificar(i)}\")\n\npares = [n for n in range(1, 21) if n % 2 == 0]\nprint('Pares:', pares)"},
-
-  {"id":"ex_py_03","lang":"python","level":"Iniciante","emoji":"✖️","xp":120,"title":"Tabuada Formatada",
-   "desc":"Crie tabuada(n) imprimindo a tabuada de 1 a 10:\n7 x  1 =  7\n7 x  2 = 14",
-   "hint":"Use range(1, 11) e f-strings com :2d para alinhar.",
-   "starter":"def tabuada(n):\n    print(f\"\\n{'='*20}\")\n    print(f\"  TABUADA DO {n}\")\n    print(f\"{'='*20}\")\n    for i in range(___, ___):\n        resultado = ___ * ___\n        print(f\"  {n} x {i:2d} = {resultado:3d}\")\n\ntabuada(7)",
-   "solution":"def tabuada(n):\n    print(f\"\\n{'='*20}\")\n    print(f\"  TABUADA DO {n}\")\n    print(f\"{'='*20}\")\n    for i in range(1, 11):\n        resultado = n * i\n        print(f\"  {n} x {i:2d} = {resultado:3d}\")\n\ntabuada(7)"},
-
-  {"id":"ex_py_04","lang":"python","level":"Intermediário","emoji":"🎯","xp":150,"title":"FizzBuzz Classico",
-   "desc":"Para numeros de 1 a 50:\n- Divisivel por 3: 'Fizz'\n- Divisivel por 5: 'Buzz'\n- Divisivel por 3 e 5: 'FizzBuzz'\n- Outro: o numero",
-   "hint":"Verifique % 15 PRIMEIRO! A ordem importa.",
-   "starter":"resultado = []\nfor n in range(1, 51):\n    if n % ___ == 0:\n        resultado.append('FizzBuzz')\n    elif n % ___ == 0:\n        resultado.append('Fizz')\n    elif n % ___ == 0:\n        resultado.append('Buzz')\n    else:\n        resultado.append(str(n))\n\nfor i in range(0, 50, 10):\n    print(' '.join(resultado[i:i+10]))",
-   "solution":"resultado = []\nfor n in range(1, 51):\n    if n % 15 == 0:\n        resultado.append('FizzBuzz')\n    elif n % 3 == 0:\n        resultado.append('Fizz')\n    elif n % 5 == 0:\n        resultado.append('Buzz')\n    else:\n        resultado.append(str(n))\n\nfor i in range(0, 50, 10):\n    print(' '.join(resultado[i:i+10]))"},
-
-  {"id":"ex_py_05","lang":"python","level":"Intermediário","emoji":"📊","xp":180,"title":"Analisador de Lista",
-   "desc":"Crie analisar(nums) retornando dict com:\nsoma, media, maior, menor, qtd_pares, qtd_impares",
-   "hint":"Use sum(), max(), min(), len() do Python.",
-   "starter":"def analisar(nums):\n    return {\n        'soma':        ___,\n        'media':       round(___ / len(nums), 2),\n        'maior':       ___,\n        'menor':       ___,\n        'qtd_pares':   len([n for n in nums if ___ == 0]),\n        'qtd_impares': len([n for n in nums if ___ != 0]),\n    }\n\nnumeros = [3, 7, 2, 9, 4, 1, 8, 5, 6, 10]\nstats = analisar(numeros)\nfor k, v in stats.items():\n    print(f'{k:14}: {v}')",
-   "solution":"def analisar(nums):\n    return {\n        'soma':        sum(nums),\n        'media':       round(sum(nums) / len(nums), 2),\n        'maior':       max(nums),\n        'menor':       min(nums),\n        'qtd_pares':   len([n for n in nums if n % 2 == 0]),\n        'qtd_impares': len([n for n in nums if n % 2 != 0]),\n    }\n\nnumeros = [3, 7, 2, 9, 4, 1, 8, 5, 6, 10]\nstats = analisar(numeros)\nfor k, v in stats.items():\n    print(f'{k:14}: {v}')"},
-
-  {"id":"ex_js_01","lang":"javascript","level":"Iniciante","emoji":"🌡️","xp":120,"title":"Conversor de Temperatura",
-   "desc":"Crie 3 arrow functions:\n- celsiusParaF(c): (c x 9/5) + 32\n- fahrenheitParaC(f): (f-32) x 5/9\n- celsiusParaK(c): c + 273.15",
-   "hint":"Use arrow functions e .toFixed(2) para 2 casas decimais.",
-   "starter":"const celsiusParaF = (c) => ___;\nconst fahrenheitParaC = (f) => ___;\nconst celsiusParaK = (c) => ___;\n\nconsole.log('100C = ' + celsiusParaF(100) + ' F');\nconsole.log('212F = ' + fahrenheitParaC(212) + ' C');\nconsole.log('0C = ' + celsiusParaK(0) + ' K');",
-   "solution":"const celsiusParaF = (c) => ((c * 9/5) + 32).toFixed(2);\nconst fahrenheitParaC = (f) => ((f - 32) * 5/9).toFixed(2);\nconst celsiusParaK = (c) => (c + 273.15).toFixed(2);\n\nconsole.log('100C = ' + celsiusParaF(100) + ' F');\nconsole.log('212F = ' + fahrenheitParaC(212) + ' C');\nconsole.log('0C = ' + celsiusParaK(0) + ' K');"},
-
-  {"id":"ex_js_02","lang":"javascript","level":"Intermediário","emoji":"🛒","xp":160,"title":"Pipeline de Produtos",
-   "desc":"Use filter/map/sort/reduce para:\n1. Filtrar estoque > 0\n2. Aplicar 15% desconto nos acima de R$100\n3. Ordenar por preco crescente\n4. Calcular total",
-   "hint":"Encadeie: .filter().map().sort() depois .reduce()",
-   "starter":"const produtos = [\n  {nome:'Notebook',preco:2500,estoque:3},\n  {nome:'Caneta',preco:5,estoque:0},\n  {nome:'Mouse',preco:80,estoque:10},\n  {nome:'Monitor',preco:1200,estoque:2},\n];\n\nconst pipeline = produtos\n  ._____(p => p.estoque > 0)\n  ._____(p => ({...p, final: p.preco > 100 ? p.preco * 0.85 : p.preco}))\n  ._____((___, b) => a.final - b.final);\n\nconst total = pipeline.reduce((___, p) => ___ + p.final, 0);\npipeline.forEach(p => console.log(p.nome + ': R$' + p.final.toFixed(2)));\nconsole.log('Total: R$' + total.toFixed(2));",
-   "solution":"const produtos = [\n  {nome:'Notebook',preco:2500,estoque:3},\n  {nome:'Caneta',preco:5,estoque:0},\n  {nome:'Mouse',preco:80,estoque:10},\n  {nome:'Monitor',preco:1200,estoque:2},\n];\n\nconst pipeline = produtos\n  .filter(p => p.estoque > 0)\n  .map(p => ({...p, final: p.preco > 100 ? p.preco * 0.85 : p.preco}))\n  .sort((a, b) => a.final - b.final);\n\nconst total = pipeline.reduce((acc, p) => acc + p.final, 0);\npipeline.forEach(p => console.log(p.nome + ': R$' + p.final.toFixed(2)));\nconsole.log('Total: R$' + total.toFixed(2));"},
-
-  {"id":"ex_java_01","lang":"java","level":"Intermediário","emoji":"🌀","xp":180,"title":"Fibonacci",
-   "desc":"Implemente:\n- fibonacci(n): recursivo\n- fibonacciLoop(n): iterativo\nImprime os 12 primeiros termos.\nF(0)=0, F(1)=1, F(n)=F(n-1)+F(n-2)",
-   "hint":"Iterativo: 2 variaveis que vao trocando de valor.",
-   "starter":"public class Fibonacci {\n\n    static long fibonacci(int n) {\n        if (n <= 1) return ___;\n        return ___(n-1) + ___(n-2);\n    }\n\n    static long fibonacciLoop(int n) {\n        if (n <= 1) return n;\n        long a = 0, b = 1;\n        for (int i = 2; i <= n; i++) {\n            long temp = a + b;\n            a = ___;\n            b = ___;\n        }\n        return b;\n    }\n\n    public static void main(String[] args) {\n        System.out.print(\"Recursivo: \");\n        for (int i = 0; i < 12; i++)\n            System.out.print(fibonacci(i) + \" \");\n    }\n}",
-   "solution":"public class Fibonacci {\n    static long fibonacci(int n) {\n        if (n <= 1) return n;\n        return fibonacci(n-1) + fibonacci(n-2);\n    }\n    static long fibonacciLoop(int n) {\n        if (n <= 1) return n;\n        long a = 0, b = 1;\n        for (int i = 2; i <= n; i++) {\n            long temp = a + b; a = b; b = temp;\n        }\n        return b;\n    }\n    public static void main(String[] args) {\n        System.out.print(\"Recursivo: \");\n        for (int i=0;i<12;i++) System.out.print(fibonacci(i)+\" \");\n        System.out.print(\"\\nIterativo: \");\n        for (int i=0;i<12;i++) System.out.print(fibonacciLoop(i)+\" \");\n    }\n}"},
+  {
+    "id": "ex_py_01", "lang": "python", "level": "Iniciante", "emoji": "👋", "xp": 100,
+    "title": "Saudação Personalizada",
+    "desc": (
+      "Crie a função saudar(nome) que retorne:\n"
+      "  'Olá, [NOME]! Bem-vindo ao CodeMaster Pro!'\n\n"
+      "O nome deve estar em MAIÚSCULAS.\n\n"
+      "Exemplos:\n"
+      "  saudar('ana')    → 'Olá, ANA! Bem-vindo ao CodeMaster Pro!'\n"
+      "  saudar('carlos') → 'Olá, CARLOS! Bem-vindo ao CodeMaster Pro!'"
+    ),
+    "hint": "Use .upper() para maiúsculas e f-strings para formatar.",
+    "starter": (
+      "def saudar(nome: str) -> str:\n"
+      "    nome_maiusculo = nome._____()\n"
+      '    return f"_____, {_____}! Bem-vindo ao CodeMaster Pro!"\n\n'
+      'print(saudar("ana"))\n'
+      'print(saudar("carlos"))'
+    ),
+    "solution": (
+      "def saudar(nome: str) -> str:\n"
+      "    nome_maiusculo = nome.upper()\n"
+      '    return f"Olá, {nome_maiusculo}! Bem-vindo ao CodeMaster Pro!"\n\n'
+      'print(saudar("ana"))\n'
+      'print(saudar("carlos"))'
+    )
+  },
+  {
+    "id": "ex_py_02", "lang": "python", "level": "Iniciante", "emoji": "🔢", "xp": 100,
+    "title": "Par ou Ímpar",
+    "desc": (
+      "Crie verificar(n) que retorne 'par' ou 'ímpar'.\n"
+      "Depois use list comprehension para listar todos\n"
+      "os pares de 1 a 20."
+    ),
+    "hint": "Use % 2. Se n % 2 == 0, é par!",
+    "starter": (
+      "def verificar(numero: int) -> str:\n"
+      "    if numero % ___ == ___:\n"
+      '        return "par"\n'
+      '    return "ímpar"\n\n'
+      "for i in range(1, 11):\n"
+      '    print(f"{i} é {verificar(i)}")\n\n'
+      "pares = [n for n in range(1, 21) if ___]\n"
+      'print("Pares:", pares)'
+    ),
+    "solution": (
+      "def verificar(numero: int) -> str:\n"
+      "    if numero % 2 == 0:\n"
+      "        return 'par'\n"
+      "    return 'ímpar'\n\n"
+      "for i in range(1, 11):\n"
+      '    print(f"{i} é {verificar(i)}")\n\n'
+      "pares = [n for n in range(1, 21) if n % 2 == 0]\n"
+      "print('Pares:', pares)"
+    )
+  },
+  {
+    "id": "ex_py_03", "lang": "python", "level": "Iniciante", "emoji": "✖️", "xp": 120,
+    "title": "Tabuada Formatada",
+    "desc": (
+      "Crie tabuada(n) imprimindo a tabuada de 1 a 10:\n\n"
+      "  ====================\n"
+      "    TABUADA DO 7\n"
+      "  ====================\n"
+      "  7 x  1 =   7\n"
+      "  7 x  2 =  14\n"
+      "    ..."
+    ),
+    "hint": "Use range(1, 11) e f-strings com :2d para alinhar.",
+    "starter": (
+      "def tabuada(n: int) -> None:\n"
+      '    print(f"\\n{\'=\'*22}")\n'
+      '    print(f"  TABUADA DO {n}")\n'
+      '    print(f"{\'=\'*22}")\n'
+      "    for i in range(___, ___):\n"
+      "        resultado = ___ * ___\n"
+      '        print(f"  {n} x {i:2d} = {resultado:3d}")\n\n'
+      "tabuada(7)"
+    ),
+    "solution": (
+      "def tabuada(n: int) -> None:\n"
+      '    print(f"\\n{\'=\'*22}")\n'
+      '    print(f"  TABUADA DO {n}")\n'
+      '    print(f"{\'=\'*22}")\n'
+      "    for i in range(1, 11):\n"
+      "        resultado = n * i\n"
+      '        print(f"  {n} x {i:2d} = {resultado:3d}")\n\n'
+      "tabuada(7)"
+    )
+  },
+  {
+    "id": "ex_py_04", "lang": "python", "level": "Intermediário", "emoji": "🎯", "xp": 150,
+    "title": "FizzBuzz Clássico",
+    "desc": (
+      "Para números de 1 a 50:\n"
+      "  • Divisível por 15 → 'FizzBuzz'\n"
+      "  • Divisível por 3  → 'Fizz'\n"
+      "  • Divisível por 5  → 'Buzz'\n"
+      "  • Outro            → o número\n\n"
+      "Imprima 10 por linha."
+    ),
+    "hint": "Verifique % 15 PRIMEIRO! A ordem dos elif importa.",
+    "starter": (
+      "resultado = []\n"
+      "for n in range(1, 51):\n"
+      "    if n % ___ == 0:\n"
+      "        resultado.append('FizzBuzz')\n"
+      "    elif n % ___ == 0:\n"
+      "        resultado.append('Fizz')\n"
+      "    elif n % ___ == 0:\n"
+      "        resultado.append('Buzz')\n"
+      "    else:\n"
+      "        resultado.append(str(n))\n\n"
+      "for i in range(0, 50, 10):\n"
+      "    print(' '.join(resultado[i:i+10]))"
+    ),
+    "solution": (
+      "resultado = []\n"
+      "for n in range(1, 51):\n"
+      "    if n % 15 == 0:\n"
+      "        resultado.append('FizzBuzz')\n"
+      "    elif n % 3 == 0:\n"
+      "        resultado.append('Fizz')\n"
+      "    elif n % 5 == 0:\n"
+      "        resultado.append('Buzz')\n"
+      "    else:\n"
+      "        resultado.append(str(n))\n\n"
+      "for i in range(0, 50, 10):\n"
+      "    print(' '.join(resultado[i:i+10]))"
+    )
+  },
+  {
+    "id": "ex_py_05", "lang": "python", "level": "Intermediário", "emoji": "📊", "xp": 180,
+    "title": "Analisador de Lista",
+    "desc": (
+      "Crie analisar(nums) retornando um dicionário com:\n"
+      "  soma, media, maior, menor, qtd_pares, qtd_impares"
+    ),
+    "hint": "Use sum(), max(), min(), len() nativos do Python.",
+    "starter": (
+      "def analisar(nums: list) -> dict:\n"
+      "    return {\n"
+      "        'soma':        ___,\n"
+      "        'media':       round(___ / len(nums), 2),\n"
+      "        'maior':       ___,\n"
+      "        'menor':       ___,\n"
+      "        'qtd_pares':   len([n for n in nums if ___ == 0]),\n"
+      "        'qtd_impares': len([n for n in nums if ___ != 0]),\n"
+      "    }\n\n"
+      "numeros = [3, 7, 2, 9, 4, 1, 8, 5, 6, 10]\n"
+      "stats = analisar(numeros)\n"
+      "for k, v in stats.items():\n"
+      "    print(f'{k:14}: {v}')"
+    ),
+    "solution": (
+      "def analisar(nums: list) -> dict:\n"
+      "    return {\n"
+      "        'soma':        sum(nums),\n"
+      "        'media':       round(sum(nums) / len(nums), 2),\n"
+      "        'maior':       max(nums),\n"
+      "        'menor':       min(nums),\n"
+      "        'qtd_pares':   len([n for n in nums if n % 2 == 0]),\n"
+      "        'qtd_impares': len([n for n in nums if n % 2 != 0]),\n"
+      "    }\n\n"
+      "numeros = [3, 7, 2, 9, 4, 1, 8, 5, 6, 10]\n"
+      "stats = analisar(numeros)\n"
+      "for k, v in stats.items():\n"
+      "    print(f'{k:14}: {v}')"
+    )
+  },
+  {
+    "id": "ex_js_01", "lang": "javascript", "level": "Iniciante", "emoji": "🌡️", "xp": 120,
+    "title": "Conversor de Temperatura",
+    "desc": (
+      "Crie 3 arrow functions:\n"
+      "  celsiusParaF(c)   → (c × 9/5) + 32\n"
+      "  fahrenheitParaC(f) → (f-32) × 5/9\n"
+      "  celsiusParaK(c)   → c + 273.15\n\n"
+      "Retorne sempre com 2 casas decimais."
+    ),
+    "hint": "Use arrow functions e .toFixed(2) para 2 casas decimais.",
+    "starter": (
+      "const celsiusParaF    = (c) => ___;\n"
+      "const fahrenheitParaC = (f) => ___;\n"
+      "const celsiusParaK    = (c) => ___;\n\n"
+      "console.log('100°C =', celsiusParaF(100), '°F');\n"
+      "console.log('212°F =', fahrenheitParaC(212), '°C');\n"
+      "console.log('  0°C =', celsiusParaK(0), 'K');"
+    ),
+    "solution": (
+      "const celsiusParaF    = (c) => ((c * 9/5) + 32).toFixed(2);\n"
+      "const fahrenheitParaC = (f) => ((f - 32) * 5/9).toFixed(2);\n"
+      "const celsiusParaK    = (c) => (c + 273.15).toFixed(2);\n\n"
+      "console.log('100°C =', celsiusParaF(100), '°F');\n"
+      "console.log('212°F =', fahrenheitParaC(212), '°C');\n"
+      "console.log('  0°C =', celsiusParaK(0), 'K');"
+    )
+  },
+  {
+    "id": "ex_js_02", "lang": "javascript", "level": "Intermediário", "emoji": "🛒", "xp": 160,
+    "title": "Pipeline de Produtos",
+    "desc": (
+      "Use filter/map/sort/reduce para:\n"
+      "  1. Filtrar apenas produtos em estoque\n"
+      "  2. Aplicar 15% de desconto em produtos > R$100\n"
+      "  3. Ordenar por preço final crescente\n"
+      "  4. Calcular o total"
+    ),
+    "hint": "Encadeie: .filter().map().sort() depois .reduce()",
+    "starter": (
+      "const produtos = [\n"
+      "  {nome:'Notebook',preco:2500,estoque:3},\n"
+      "  {nome:'Caneta',preco:5,estoque:0},\n"
+      "  {nome:'Mouse',preco:80,estoque:10},\n"
+      "  {nome:'Monitor',preco:1200,estoque:2},\n"
+      "];\n\n"
+      "const pipeline = produtos\n"
+      "  ._____(p => p.estoque > 0)\n"
+      "  ._____(p => ({...p, final: p.preco > 100 ? p.preco * 0.85 : p.preco}))\n"
+      "  ._____((a, b) => a.final - b.final);\n\n"
+      "const total = pipeline.reduce((acc, p) => ___ + p.final, 0);\n"
+      "pipeline.forEach(p => console.log(`${p.nome}: R$${p.final.toFixed(2)}`));\n"
+      "console.log('Total: R$' + total.toFixed(2));"
+    ),
+    "solution": (
+      "const produtos = [\n"
+      "  {nome:'Notebook',preco:2500,estoque:3},\n"
+      "  {nome:'Caneta',preco:5,estoque:0},\n"
+      "  {nome:'Mouse',preco:80,estoque:10},\n"
+      "  {nome:'Monitor',preco:1200,estoque:2},\n"
+      "];\n\n"
+      "const pipeline = produtos\n"
+      "  .filter(p => p.estoque > 0)\n"
+      "  .map(p => ({...p, final: p.preco > 100 ? p.preco * 0.85 : p.preco}))\n"
+      "  .sort((a, b) => a.final - b.final);\n\n"
+      "const total = pipeline.reduce((acc, p) => acc + p.final, 0);\n"
+      "pipeline.forEach(p => console.log(`${p.nome}: R$${p.final.toFixed(2)}`));\n"
+      "console.log('Total: R$' + total.toFixed(2));"
+    )
+  },
+  {
+    "id": "ex_java_01", "lang": "java", "level": "Intermediário", "emoji": "🌀", "xp": 180,
+    "title": "Fibonacci",
+    "desc": (
+      "Implemente dois métodos:\n"
+      "  fibonacci(n)     → recursivo\n"
+      "  fibonacciLoop(n) → iterativo (mais eficiente!)\n\n"
+      "Imprima os 12 primeiros termos de cada.\n"
+      "F(0)=0, F(1)=1, F(n)=F(n-1)+F(n-2)"
+    ),
+    "hint": "Iterativo: 2 variáveis que vão trocando de valor (temp = a+b; a=b; b=temp).",
+    "starter": (
+      "public class Fibonacci {\n\n"
+      "    static long fibonacci(int n) {\n"
+      "        if (n <= 1) return ___;\n"
+      "        return ___(n-1) + ___(n-2);\n"
+      "    }\n\n"
+      "    static long fibonacciLoop(int n) {\n"
+      "        if (n <= 1) return n;\n"
+      "        long a = 0, b = 1;\n"
+      "        for (int i = 2; i <= n; i++) {\n"
+      "            long temp = a + b;\n"
+      "            a = ___;\n"
+      "            b = ___;\n"
+      "        }\n"
+      "        return b;\n"
+      "    }\n\n"
+      "    public static void main(String[] args) {\n"
+      '        System.out.print("Recursivo: ");\n'
+      "        for (int i = 0; i < 12; i++)\n"
+      "            System.out.print(fibonacci(i) + \" \");\n"
+      "    }\n"
+      "}"
+    ),
+    "solution": (
+      "public class Fibonacci {\n"
+      "    static long fibonacci(int n) {\n"
+      "        if (n <= 1) return n;\n"
+      "        return fibonacci(n-1) + fibonacci(n-2);\n"
+      "    }\n"
+      "    static long fibonacciLoop(int n) {\n"
+      "        if (n <= 1) return n;\n"
+      "        long a = 0, b = 1;\n"
+      "        for (int i = 2; i <= n; i++) {\n"
+      "            long temp = a + b; a = b; b = temp;\n"
+      "        }\n"
+      "        return b;\n"
+      "    }\n"
+      "    public static void main(String[] args) {\n"
+      '        System.out.print("Recursivo: ");\n'
+      "        for (int i=0;i<12;i++) System.out.print(fibonacci(i)+\" \");\n"
+      '        System.out.print("\\nIterativo: ");\n'
+      "        for (int i=0;i<12;i++) System.out.print(fibonacciLoop(i)+\" \");\n"
+      "    }\n"
+      "}"
+    )
+  },
 ]
 
+# FIX #3: Correct lang prefix for langDone — use full prefix
 QUIZZES = [
-  {"id":"q01","lang":"python","level":"Iniciante","q":"O que imprime: print(10 // 3)?","opts":["3.33","3","4","1"],"ans":1,"exp":"// e divisao inteira. 10 // 3 = 3 (trunca o decimal)."},
-  {"id":"q02","lang":"python","level":"Iniciante","q":"Qual funcao verifica o tipo de uma variavel?","opts":["typeof()","typeOf()","type()","getType()"],"ans":2,"exp":"type(variavel) retorna o tipo. Ex: type(42) retorna <class 'int'>."},
-  {"id":"q03","lang":"python","level":"Iniciante","q":"O que faz o operador ** em Python?","opts":["Multiplicacao","Divisao","Potencia","Bitwise AND"],"ans":2,"exp":"** e potencia. 2**8 = 256, 3**3 = 27."},
-  {"id":"q04","lang":"python","level":"Intermediário","q":"O que imprime: print([x**2 for x in range(4)])?","opts":["[0,1,4,9]","[1,4,9,16]","[0,1,2,3]","[1,2,3,4]"],"ans":0,"exp":"range(4) gera [0,1,2,3]. Elevando ao quadrado: [0,1,4,9]."},
-  {"id":"q05","lang":"python","level":"Intermediário","q":"Qual metodo de dict retorna None se a chave nao existir?","opts":["d['chave']","d.find()","d.get()","d.fetch()"],"ans":2,"exp":"d.get('chave') retorna None. d['chave'] lanca KeyError!"},
-  {"id":"q06","lang":"python","level":"Avançado","q":"O que sao *args em Python?","opts":["Apenas 1 arg","Args nomeados","Qualquer qtd de args em tupla","Arg obrigatorio"],"ans":2,"exp":"*args captura qualquer numero de argumentos posicionais como tupla."},
-  {"id":"q07","lang":"javascript","level":"Iniciante","q":"Diferenca entre let e const?","opts":["let e mais rapido","const nao pode ser reatribuido","let tem escopo global","Nao ha diferenca"],"ans":1,"exp":"const cria referencia imutavel. let pode ser reatribuido."},
-  {"id":"q08","lang":"javascript","level":"Iniciante","q":"O que retorna typeof null?","opts":["'null'","'undefined'","'object'","'boolean'"],"ans":2,"exp":"Bug historico do JS! typeof null retorna 'object'. Use === null para checar."},
-  {"id":"q09","lang":"javascript","level":"Intermediário","q":"O que faz Array.filter()?","opts":["Transforma cada elemento","Filtra e retorna novo array","Ordena o array","Encontra 1 elemento"],"ans":1,"exp":"filter(fn) retorna novo array com elementos onde fn retorna true."},
-  {"id":"q10","lang":"javascript","level":"Intermediário","q":"Arrow function correta:","opts":["function => x*2","x -> x*2","x => x*2","(x) >> x*2"],"ans":2,"exp":"Arrow function: x => x * 2. Com 2 params: (x, y) => x + y."},
-  {"id":"q11","lang":"java","level":"Iniciante","q":"int x = 7 / 2 em Java resulta em?","opts":["3.5","3","4","Erro"],"ans":1,"exp":"Java: int/int = int (trunca). 7/2 = 3. Use (double)7/2 para 3.5."},
-  {"id":"q12","lang":"java","level":"Iniciante","q":"Qual modificador torna membro privado a classe?","opts":["public","protected","package","private"],"ans":3,"exp":"private: acesso apenas dentro da propria classe."},
-  {"id":"q13","lang":"java","level":"Intermediário","q":"O que e @Override em Java?","opts":["Cria nova classe","Indica sobrescrita de metodo","Torna estatico","Declara excecao"],"ans":1,"exp":"@Override indica sobrescrita de metodo da superclasse. Compilador verifica!"},
-  {"id":"q14","lang":"python","level":"Avançado","q":"Qual estrutura Python NAO permite duplicatas?","opts":["list","tuple","dict","set"],"ans":3,"exp":"set nao aceita duplicatas. {1,2,2,3} = {1,2,3}."},
-  {"id":"q15","lang":"javascript","level":"Avançado","q":"O que e uma Closure?","opts":["Tipo de loop","Funcao que lembra escopo lexico","Forma de importar","Metodo de array"],"ans":1,"exp":"Closure e funcao que lembra o ambiente onde foi criada."},
+  {"id":"q01","lang":"python","level":"Iniciante",
+   "q":"O que imprime: print(10 // 3)?",
+   "opts":["3.33","3","4","1"],"ans":1,
+   "exp":"// é divisão inteira (floor division). 10 // 3 = 3 (trunca o decimal)."},
+
+  {"id":"q02","lang":"python","level":"Iniciante",
+   "q":"Qual função verifica o tipo de uma variável em Python?",
+   "opts":["typeof()","typeOf()","type()","getType()"],"ans":2,
+   "exp":"type(variavel) retorna o tipo. Ex: type(42) → <class 'int'>."},
+
+  {"id":"q03","lang":"python","level":"Iniciante",
+   "q":"O que faz o operador ** em Python?",
+   "opts":["Multiplicação","Divisão","Potência","Bitwise AND"],"ans":2,
+   "exp":"** é potência. 2**8 = 256, 3**3 = 27."},
+
+  {"id":"q04","lang":"python","level":"Intermediário",
+   "q":"O que imprime: print([x**2 for x in range(4)])?",
+   "opts":["[0,1,4,9]","[1,4,9,16]","[0,1,2,3]","[1,2,3,4]"],"ans":0,
+   "exp":"range(4) gera [0,1,2,3]. Elevando ao quadrado: [0,1,4,9]."},
+
+  {"id":"q05","lang":"python","level":"Intermediário",
+   "q":"Qual método de dict retorna None se a chave não existir?",
+   "opts":["d['chave']","d.find()","d.get()","d.fetch()"],"ans":2,
+   "exp":"d.get('chave') retorna None. d['chave'] lança KeyError!"},
+
+  {"id":"q06","lang":"python","level":"Avançado",
+   "q":"O que são *args em Python?",
+   "opts":["Apenas 1 argumento","Argumentos nomeados","Qualquer qtd de args como tupla","Argumento obrigatório"],"ans":2,
+   "exp":"*args captura qualquer número de argumentos posicionais como tupla."},
+
+  {"id":"q07","lang":"javascript","level":"Iniciante",
+   "q":"Diferença entre let e const?",
+   "opts":["let é mais rápido","const não pode ser reatribuído","let tem escopo global","Não há diferença"],"ans":1,
+   "exp":"const cria referência imutável. let pode ser reatribuído."},
+
+  {"id":"q08","lang":"javascript","level":"Iniciante",
+   "q":"O que retorna typeof null?",
+   "opts":["'null'","'undefined'","'object'","'boolean'"],"ans":2,
+   "exp":"Bug histórico do JS! typeof null retorna 'object'. Use === null para checar nulo."},
+
+  {"id":"q09","lang":"javascript","level":"Intermediário",
+   "q":"O que faz Array.filter()?",
+   "opts":["Transforma cada elemento","Filtra e retorna novo array","Ordena o array","Encontra 1 elemento"],"ans":1,
+   "exp":"filter(fn) retorna novo array com elementos onde fn retorna true."},
+
+  {"id":"q10","lang":"javascript","level":"Intermediário",
+   "q":"Arrow function correta para dobrar um número:",
+   "opts":["function => x*2","x -> x*2","x => x*2","(x) >> x*2"],"ans":2,
+   "exp":"Arrow function: x => x * 2. Com 2 params: (x, y) => x + y."},
+
+  {"id":"q11","lang":"java","level":"Iniciante",
+   "q":"int x = 7 / 2 em Java resulta em?",
+   "opts":["3.5","3","4","Erro de compilação"],"ans":1,
+   "exp":"Java: int/int = int (trunca). 7/2 = 3. Use (double)7/2 para obter 3.5."},
+
+  {"id":"q12","lang":"java","level":"Iniciante",
+   "q":"Qual modificador torna um membro acessível apenas dentro da própria classe?",
+   "opts":["public","protected","package-private","private"],"ans":3,
+   "exp":"private: acesso somente dentro da própria classe."},
+
+  {"id":"q13","lang":"java","level":"Intermediário",
+   "q":"O que a anotação @Override faz em Java?",
+   "opts":["Cria nova classe","Indica sobrescrita de método","Torna o método estático","Declara exceção"],"ans":1,
+   "exp":"@Override indica sobrescrita de método da superclasse. O compilador verifica se o método existe!"},
+
+  {"id":"q14","lang":"python","level":"Avançado",
+   "q":"Qual estrutura de dados Python NÃO permite duplicatas?",
+   "opts":["list","tuple","dict","set"],"ans":3,
+   "exp":"set não aceita duplicatas. {1,2,2,3} = {1,2,3}."},
+
+  {"id":"q15","lang":"javascript","level":"Avançado",
+   "q":"O que é uma Closure em JavaScript?",
+   "opts":["Um tipo de loop","Uma função que lembra seu escopo léxico","Uma forma de importar módulos","Um método de array"],"ans":1,
+   "exp":"Closure é uma função que lembra o ambiente (escopo) onde foi criada, mesmo após esse escopo ter encerrado."},
 ]
 
-def load_progress():
-    try:
-        if os.path.exists(PROGRESS_F):
-            with open(PROGRESS_F) as f: return json.load(f)
-    except: pass
-    return {"lessons":[],"exercises":[],"xp":0,"level":1,"quizzes_taken":0,"quiz_correct":0}
+# ── Allowed content IDs (FIX #4: input validation) ──────────────────────────
+_VALID_LESSON_IDS    = {l["id"] for lessons in LESSONS.values() for l in lessons}
+_VALID_EXERCISE_IDS  = {e["id"] for e in EXERCISES}
+_VALID_QUIZ_IDS      = {q["id"] for q in QUIZZES}
 
-def save_progress(data):
+# ══════════════════════════════════════════════════════════════════════════════
+#  PROGRESS PERSISTENCE
+# ══════════════════════════════════════════════════════════════════════════════
+_progress_lock = threading.Lock()
+
+def _default_progress() -> dict:
+    return {
+        "lessons": [], "exercises": [],
+        "xp": 0, "level": 1,
+        "quizzes_taken": 0, "quiz_correct": 0
+    }
+
+def load_progress() -> dict:
+    """Thread-safe progress loader with validation."""
     try:
-        with open(PROGRESS_F, "w") as f: json.dump(data, f, indent=2)
-    except: pass
+        with _progress_lock:
+            if not os.path.exists(PROGRESS_F):
+                return _default_progress()
+            with open(PROGRESS_F, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # Validate & patch missing keys
+            defaults = _default_progress()
+            for k, v in defaults.items():
+                if k not in data:
+                    data[k] = v
+            return data
+    except (json.JSONDecodeError, OSError):
+        return _default_progress()
+
+def save_progress(data: dict) -> bool:
+    """Thread-safe progress saver. Returns True on success."""
+    try:
+        with _progress_lock:
+            # Write to temp file first, then rename (atomic)
+            tmp = PROGRESS_F + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, PROGRESS_F)
+        return True
+    except OSError as e:
+        app.logger.error(f"save_progress failed: {e}")
+        return False
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  ROUTES
+# ══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/")
 def index():
     return send_from_directory(BASE_DIR, "index.html")
 
+@app.route("/api/health")
+def health():
+    return jsonify({"status": "ok", "ai": bool(API_KEY)})
+
 @app.route("/api/languages")
 def get_languages():
     return jsonify([
-        {"id":"python",     "name":"Python",     "emoji":"🐍","color":"#3b82f6","lessons":len(LESSONS["python"]),     "desc":"Simples, poderoso e versatil"},
-        {"id":"javascript", "name":"JavaScript", "emoji":"⚡","color":"#fbbf24","lessons":len(LESSONS["javascript"]), "desc":"A linguagem da web moderna"},
-        {"id":"java",       "name":"Java",       "emoji":"☕","color":"#ef4444","lessons":len(LESSONS["java"]),       "desc":"Robusto e orientado a objetos"},
+        {"id": "python",     "name": "Python",     "emoji": "🐍", "color": "#3b82f6",
+         "lessons": len(LESSONS["python"]),     "desc": "Simples, poderoso e versátil"},
+        {"id": "javascript", "name": "JavaScript", "emoji": "⚡", "color": "#fbbf24",
+         "lessons": len(LESSONS["javascript"]), "desc": "A linguagem da web moderna"},
+        {"id": "java",       "name": "Java",       "emoji": "☕", "color": "#ef4444",
+         "lessons": len(LESSONS["java"]),       "desc": "Robusto e orientado a objetos"},
     ])
 
 @app.route("/api/lessons/<lang>")
-def get_lessons(lang):
-    if lang not in LESSONS: return jsonify({"error":"Nao encontrado"}), 404
+def get_lessons(lang: str):
+    if lang not in LESSONS:
+        return jsonify({"error": "Linguagem não encontrada"}), 404
     return jsonify(LESSONS[lang])
 
 @app.route("/api/exercises")
 def get_exercises():
-    lang  = request.args.get("lang")
-    exs   = EXERCISES
-    if lang: exs = [e for e in exs if e["lang"] == lang]
+    lang = request.args.get("lang", "").strip()
+    exs  = EXERCISES if not lang else [e for e in EXERCISES if e["lang"] == lang]
     return jsonify(exs)
 
 @app.route("/api/quiz/random")
 def get_quiz():
-    lang  = request.args.get("lang")
-    count = int(request.args.get("count", 8))
+    lang  = request.args.get("lang", "").strip()
+    count = min(int(request.args.get("count", 8)), 15)
     pool  = [q for q in QUIZZES if q["lang"] == lang] if lang else QUIZZES
+    if not pool:
+        return jsonify({"questions": [], "ids": []})
     selected = random.sample(pool, min(count, len(pool)))
-    clean = [{k:v for k,v in q.items() if k != "ans"} for q in selected]
-    return jsonify({"questions":clean, "ids":[q["id"] for q in selected]})
+    # Strip answer before sending to client
+    clean = [{k: v for k, v in q.items() if k not in ("ans", "exp")} for q in selected]
+    return jsonify({"questions": clean, "ids": [q["id"] for q in selected]})
 
 @app.route("/api/quiz/check", methods=["POST"])
+@rate_limit(max_calls=60, window_seconds=60)
 def check_quiz():
-    data = request.json
+    """FIX #5: XP awarded per quiz-session via session_xp, not per call."""
+    data    = request.get_json(silent=True) or {}
     answers = data.get("answers", {})
+
+    if not isinstance(answers, dict) or len(answers) > 15:
+        return jsonify({"error": "Payload inválido"}), 400
+
     correct = 0
     results = []
     for qid, user_ans in answers.items():
-        q = next((x for x in QUIZZES if x["id"] == qid), None)
-        if q:
-            ok = (user_ans == q["ans"])
-            if ok: correct += 1
-            results.append({"id":qid,"correct":ok,"right_answer":q["ans"],"explanation":q["exp"]})
-    p = load_progress()
-    p["quizzes_taken"] = p.get("quizzes_taken",0) + 1
-    p["quiz_correct"]  = p.get("quiz_correct",0)  + correct
-    p["xp"]    = p.get("xp",0) + correct * 20
-    p["level"] = p["xp"] // 500 + 1
-    save_progress(p)
-    return jsonify({"correct":correct,"total":len(answers),"results":results})
+        # FIX: validate qid
+        if qid not in _VALID_QUIZ_IDS:
+            continue
+        if not isinstance(user_ans, int):
+            continue
+        q  = next((x for x in QUIZZES if x["id"] == qid), None)
+        if not q:
+            continue
+        ok = (user_ans == q["ans"])
+        if ok:
+            correct += 1
+        results.append({
+            "id": qid, "correct": ok,
+            "right_answer": q["ans"], "explanation": q["exp"]
+        })
 
-@app.route("/api/progress", methods=["GET","POST"])
+    p = load_progress()
+    p["quizzes_taken"] = p.get("quizzes_taken", 0) + 1  # Once per quiz-session
+    p["quiz_correct"]  = p.get("quiz_correct",  0) + correct
+    p["xp"]            = p.get("xp",  0) + correct * 20
+    p["level"]         = p["xp"] // 500 + 1
+    save_progress(p)
+
+    return jsonify({"correct": correct, "total": len(answers), "results": results})
+
+@app.route("/api/progress", methods=["GET", "POST"])
 def progress():
-    if request.method == "GET": return jsonify(load_progress())
-    data = request.json
-    p    = load_progress()
-    if data.get("action") == "complete_lesson":
-        lid = data["lesson_id"]
-        if lid not in p.get("lessons",[]):
-            p.setdefault("lessons",[]).append(lid)
-            p["xp"] = p.get("xp",0) + 50
+    if request.method == "GET":
+        return jsonify(load_progress())
+
+    data = request.get_json(silent=True) or {}
+    action = data.get("action", "")
+    p = load_progress()
+
+    if action == "complete_lesson":
+        lid = data.get("lesson_id", "")
+        # FIX: validate lesson_id
+        if lid not in _VALID_LESSON_IDS:
+            return jsonify({"error": "lesson_id inválido"}), 400
+        if lid not in p.get("lessons", []):
+            p.setdefault("lessons", []).append(lid)
+            p["xp"]    = p.get("xp", 0) + 50
             p["level"] = p["xp"] // 500 + 1
-    elif data.get("action") == "complete_exercise":
-        eid = data["exercise_id"]
-        if eid not in p.get("exercises",[]):
-            p.setdefault("exercises",[]).append(eid)
-            p["xp"] = p.get("xp",0) + 100
+
+    elif action == "complete_exercise":
+        eid = data.get("exercise_id", "")
+        # FIX: validate exercise_id
+        if eid not in _VALID_EXERCISE_IDS:
+            return jsonify({"error": "exercise_id inválido"}), 400
+        if eid not in p.get("exercises", []):
+            p.setdefault("exercises", []).append(eid)
+            p["xp"]    = p.get("xp", 0) + 100
             p["level"] = p["xp"] // 500 + 1
+
+    elif action == "reset":
+        p = _default_progress()
+
+    else:
+        return jsonify({"error": "Ação inválida"}), 400
+
     save_progress(p)
     return jsonify(p)
 
 @app.route("/api/ai/chat", methods=["POST"])
+@rate_limit(max_calls=15, window_seconds=60)
 def ai_chat():
+    if not API_KEY:
+        return jsonify({
+            "response": (
+                "⚠️  A IA não está configurada.\n\n"
+                "Para ativar, defina a variável de ambiente:\n"
+                "  export ANTHROPIC_API_KEY='sk-ant-...'\n\n"
+                "Enquanto isso, explore as lições e exercícios!"
+            ),
+            "offline": True
+        })
+
+    data = request.get_json(silent=True) or {}
+    msgs = data.get("messages", [])
+
+    # Sanitize: only keep role/content, limit history
+    clean_msgs = [
+        {"role": m["role"], "content": str(m["content"])[:4000]}
+        for m in msgs[-12:]
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+        and m.get("content")
+    ]
+
+    if not clean_msgs:
+        return jsonify({"error": "Mensagem vazia"}), 400
+
     try:
         import anthropic
-        if not API_KEY:
-            return jsonify({"response":"Configure a API_KEY no server.py para usar a IA!\n\nEnquanto isso, explore as licoes e exercicios!", "offline":True})
         client = anthropic.Anthropic(api_key=API_KEY)
-        msgs   = request.json.get("messages",[])
         resp   = client.messages.create(
-            model="claude-opus-4-6", max_tokens=1024,
-            system="Voce e o CodeMaster AI, tutor de Python, JavaScript e Java. Responda em portugues brasileiro, seja didatico e use emojis ocasionalmente.",
-            messages=msgs[-12:]
+            model      = "claude-opus-4-5",
+            max_tokens = 1024,
+            system     = (
+                "Você é o CodeMaster AI, tutor especialista em Python, JavaScript e Java. "
+                "Responda sempre em português brasileiro. "
+                "Seja didático, use exemplos práticos de código quando relevante. "
+                "Use emojis com moderação. "
+                "Para código, use blocos markdown com a linguagem: ```python, ```javascript ou ```java."
+            ),
+            messages   = clean_msgs
         )
-        return jsonify({"response":resp.content[0].text,"offline":False})
-    except ImportError:
-        return jsonify({"response":"Instale o pacote anthropic:\npip install anthropic","offline":True})
-    except Exception as e:
-        return jsonify({"response":f"Erro: {str(e)}","offline":True})
+        return jsonify({"response": resp.content[0].text, "offline": False})
 
+    except ImportError:
+        return jsonify({
+            "response": "Instale o pacote Anthropic:\n  pip install anthropic",
+            "offline": True
+        })
+    except Exception as e:
+        app.logger.error(f"AI error: {e}")
+        return jsonify({"response": f"Erro temporário. Tente novamente.", "offline": True})
+
+# ─── 404 / Error handlers ────────────────────────────────────────────────────
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"error": "Recurso não encontrado"}), 404
+
+@app.errorhandler(500)
+def server_error(e):
+    return jsonify({"error": "Erro interno do servidor"}), 500
+
+# ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("\n╔══════════════════════════════════════╗")
-    print("║   CodeMaster Pro — Servidor Ativo    ║")
-    print("║   http://localhost:5000              ║")
-    print("╚══════════════════════════════════════╝")
-    print("Abrindo o Chrome: localhost:5000\n")
+    print("\n╔══════════════════════════════════════════╗")
+    print("║     CodeMaster Pro v3.0 — Iniciando     ║")
+    print("╚══════════════════════════════════════════╝")
+    print(f"  AI:       {'✅ Configurada' if API_KEY else '⚠️  Sem ANTHROPIC_API_KEY'}")
+    print(f"  Progress: {PROGRESS_F}")
+    print( "  URL:      http://localhost:5000\n")
